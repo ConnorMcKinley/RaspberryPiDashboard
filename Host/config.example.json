@@ -1,0 +1,19 @@
+{
+  "fidelity": {
+    "username": "your-fidelity-username",
+    "password": "your-fidelity-password",
+    "mfa": "totp",
+    "totp_secret": "YOUR_2FA_SECRET_KEY"
+  },
+  "robinhood": {
+    "username": "your-robinhood-email",
+    "password": "your-robinhood-password",
+    "totp_secret": "YOUR_ROBINHOOD_2FA_SECRET"
+  },
+  "refresh_hours": [
+    9,
+    12,
+    15,
+    18
+  ]
+}

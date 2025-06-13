@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Net Worth Dashboard</title>
+  <meta name="viewport" content="width=1872, initial-scale=1">
+  <style>
+    html, body {
+      height: 100%; width: 100%;
+      margin: 0; padding: 0;
+      background: #fff;
+      color: #191919;
+      font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace;
+      box-sizing: border-box;
+    }
+    body {
+      /* 3% margin each side for 1872x1404 = ~56px horiz, ~42px vert */
+      width: 100vw; height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .outer {
+      width: 94vw; height: 94vh;
+      max-width: 1760px;
+      max-height: 1320px;
+      background: #fff;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      position: relative;
+      box-sizing: border-box;
+    }
+    .battery-box {
+      position: absolute; top: 3rem; right: 3rem;
+      display: flex; align-items: center; gap: .55rem;
+      font-size: 2.3rem; font-weight: 600; color: #333; opacity: 0.85;
+      z-index: 10;
+    }
+    .center-stack {
+      flex: 1 0 auto;
+      width: 100%;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+    }
+    .nw-label {
+      font-size: 4.4rem;
+      font-weight: 600;
+      letter-spacing: 0.11em;
+      color: #232323;
+      text-transform: uppercase;
+      text-align: center;
+      margin-bottom: 1.7rem;
+      margin-top: 0;
+      width: 100%;
+      user-select: none;
+    }
+    .networth-val {
+      font-size: 8.7rem;
+      font-weight: 700;
+      color: #111;
+      font-variant-numeric: tabular-nums;
+      text-align: center;
+      letter-spacing: -0.02em;
+      min-width: 13ch;
+      line-height: 1.02;
+      margin-bottom: 1.8rem;
+      margin-top: 0;
+    }
+    .delta-row {
+      width: 100%;
+      display: flex; align-items: center; justify-content: center;
+      gap: 1.1rem;
+      margin-top: 0;
+      margin-bottom: 0.7em;
+    }
+    .delta-label {
+      font-size: 2.7rem;
+      color: #767676;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      user-select: none;
+      margin-right: 0.3em;
+    }
+    .delta-val {
+      font-size: 3.2rem;
+      font-weight: 700;
+      color: #343434;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.01em;
+    }
+    .delta-up { color: #167900;}
+    .delta-down { color: #e02b2b;}
+    /* Weather forecast row */
+    .weather-row {
+      display: flex;
+      flex-direction: row;
+      justify-content: center;
+      gap: 1.3vw;
+      width: 100%;
+      margin: 3.2rem 0 2.2rem 0;
+    }
+    .weather-card {
+      width: 150px;
+      max-width: 13vw;
+      min-width: 80px;
+      border-radius: 1.3rem;
+      box-shadow: 0 2px 16px #0002;
+      background: #e5e5e5;
+      color: #232323;
+      display: flex; flex-direction: column; align-items: center;
+      padding: 1.1rem 0.2rem 1.3rem 0.2rem;
+      opacity: 0.70;
+      border: 1.2px solid #d0d0d0;
+      transition: opacity 0.2s, background 0.2s;
+      position: relative;
+    }
+    .weather-card.today {
+      background: #bababa;
+      color: #131313;
+      opacity: 1;
+      border: 2.5px solid #222;
+      z-index: 2;
+    }
+    .weather-icon {
+      width: 48px; height: 48px;
+      margin-bottom: .8rem;
+    }
+    .weather-day {
+      font-size: 1.07rem;
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+      letter-spacing: 0.07em;
+    }
+    .weather-temp {
+      font-size: 1.37rem;
+      font-weight: 700;
+      margin-bottom: 0.2rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .weather-desc {
+      font-size: .89rem;
+      font-weight: 500;
+      color: #4d4d4d;
+      text-align: center;
+    }
+    .last-update {
+      position: absolute;
+      bottom: 2.2rem;
+      left: 0;
+      width: 100%;
+      text-align: center;
+      font-size: 1.2rem;
+      color: #bababa;
+      letter-spacing: .13em;
+      user-select: none;
+    }
+    @media (max-width: 1100px) {
+      .nw-label { font-size: 2.2rem;}
+      .networth-val { font-size: 4.3rem;}
+      .delta-label { font-size: 1.5rem;}
+      .delta-val { font-size: 1.7rem;}
+      .battery-box { font-size: 1.1rem;}
+      .weather-card { width: 56px; min-width: 38px; }
+      .weather-row { gap: 1vw; }
+      .weather-icon { width: 32px; height: 32px;}
+    }
+  </style>
+</head>
+<body>
+  <div class="outer">
+    <!-- Battery Indicator -->
+    <div class="battery-box">
+      <span id="battery-icon"></span>
+      <span id="bat">--</span>
+    </div>
+    <!-- Main centered stack -->
+    <div class="center-stack">
+      <div class="nw-label">Net Worth</div>
+      <div id="money" class="networth-val">--</div>
+      <div class="delta-row">
+        <div class="delta-label">&Delta;</div>
+        <div id="delta" class="delta-val">--</div>
+      </div>
+      <!-- Weather forecast row -->
+      <div class="weather-row" id="forecast-row">
+        <!-- 7 cards will be injected by JS -->
+      </div>
+    </div>
+    <!-- Last updated at bottom -->
+    <div class="last-update">
+      Last updated: <span id="updated">--</span>
+    </div>
+  </div>
+  <script>
+    const fmt = n => n == null ? '--' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+
+    function batteryIcon(level) {
+      if (level === null) return `<svg width="48" height="22"><rect x="0" y="5" width="40" height="12" rx="3" fill="none" stroke="#888" stroke-width="2"/><rect x="41" y="9" width="4" height="4" rx="1" fill="#bbb"/></svg>`;
+      let fill;
+      if (level >= 85) fill = 38;
+      else if (level >= 65) fill = 31;
+      else if (level >= 45) fill = 22;
+      else if (level >= 15) fill = 12;
+      else fill = 5;
+      const color = level < 15 ? '#e51' : '#191919';
+      return `<svg width="48" height="22">
+        <rect x="0" y="5" width="40" height="12" rx="3" fill="none" stroke="#888" stroke-width="2"/>
+        <rect x="41" y="9" width="4" height="4" rx="1" fill="#bbb"/>
+        <rect x="3" y="8" width="${fill}" height="6" rx="1.8" fill="${color}"/>
+      </svg>`;
+    }
+
+    function update() {
+      fetch('/api/data').then(r => r.json()).then(d => {
+        document.getElementById('money').textContent = (d.error || d.net_worth === null) ? "ERROR" : fmt(d.net_worth);
+        // Delta formatting
+        const val = d.change == null ? 0 : d.change;
+        let deltaText = '';
+        let deltaClass = '';
+        if (val > 0) { deltaText = '+' + fmt(val); deltaClass = 'delta-up'; }
+        else if (val < 0) { deltaText = fmt(val); deltaClass = 'delta-down'; }
+        else { deltaText = fmt(0); deltaClass = ''; }
+        let deltaElem = document.getElementById('delta');
+        deltaElem.textContent = deltaText;
+        deltaElem.className = 'delta-val ' + deltaClass;
+        // Battery
+        document.getElementById('bat').textContent = d.battery != null ? `${d.battery}%` : '--';
+        document.getElementById('battery-icon').innerHTML = batteryIcon(d.battery);
+        // Last updated
+        document.getElementById('updated').textContent = d.last_updated || '--';
+      });
+    }
+    update(); setInterval(update, 60_000);
+
+    // Weather code and UI
+    const weatherIcons = {
+      sun:     `<svg class="weather-icon" viewBox="0 0 64 64" fill="none" stroke="#444" stroke-width="3"><circle cx="32" cy="32" r="14" fill="#d8d8d8"/><g stroke="#aaa"><line x1="32" y1="4" x2="32" y2="16"/><line x1="32" y1="48" x2="32" y2="60"/><line x1="4" y1="32" x2="16" y2="32"/><line x1="48" y1="32" x2="60" y2="32"/><line x1="14" y1="14" x2="21" y2="21"/><line x1="50" y1="14" x2="43" y2="21"/><line x1="14" y1="50" x2="21" y2="43"/><line x1="50" y1="50" x2="43" y2="43"/></g></svg>`,
+      mostly_sun: `<svg class="weather-icon" viewBox="0 0 64 64" fill="none" stroke="#444" stroke-width="3"><circle cx="28" cy="32" r="13" fill="#d8d8d8"/><ellipse cx="40" cy="40" rx="11" ry="7" fill="#bbb"/><line x1="32" y1="8" x2="32" y2="16"/><line x1="32" y1="48" x2="32" y2="56"/></svg>`,
+      cloud:  `<svg class="weather-icon" viewBox="0 0 64 64" fill="none" stroke="#444" stroke-width="3"><ellipse cx="34" cy="40" rx="18" ry="12" fill="#c6c6c6"/><ellipse cx="44" cy="44" rx="10" ry="7" fill="#bbb"/></svg>`,
+      rain:   `<svg class="weather-icon" viewBox="0 0 64 64" fill="none" stroke="#444" stroke-width="3"><ellipse cx="32" cy="38" rx="16" ry="10" fill="#bbb"/><line x1="24" y1="52" x2="24" y2="60"/><line x1="32" y1="52" x2="32" y2="60"/><line x1="40" y1="52" x2="40" y2="60"/></svg>`,
+      drizzle:`<svg class="weather-icon" viewBox="0 0 64 64" fill="none" stroke="#444" stroke-width="3"><ellipse cx="34" cy="40" rx="16" ry="10" fill="#bbb"/><line x1="32" y1="54" x2="32" y2="60" stroke-dasharray="2 3"/></svg>`,
+      fog:    `<svg class="weather-icon" viewBox="0 0 64 64" fill="none" stroke="#aaa" stroke-width="3"><ellipse cx="34" cy="40" rx="18" ry="12" fill="#e0e0e0"/><line x1="14" y1="54" x2="50" y2="54"/><line x1="12" y1="58" x2="48" y2="58"/></svg>`,
+      snow:   `<svg class="weather-icon" viewBox="0 0 64 64" fill="none" stroke="#444" stroke-width="3"><ellipse cx="32" cy="38" rx="16" ry="10" fill="#eee"/><g stroke="#bbb"><line x1="20" y1="56" x2="44" y2="56"/><line x1="32" y1="52" x2="32" y2="60"/><line x1="24" y1="54" x2="40" y2="58"/><line x1="40" y1="54" x2="24" y2="58"/></g></svg>`,
+      shower: `<svg class="weather-icon" viewBox="0 0 64 64" fill="none" stroke="#444" stroke-width="3"><ellipse cx="32" cy="38" rx="16" ry="10" fill="#bbb"/><line x1="24" y1="52" x2="24" y2="58"/><line x1="32" y1="52" x2="32" y2="58"/><line x1="40" y1="52" x2="40" y2="58"/></svg>`,
+      storm:  `<svg class="weather-icon" viewBox="0 0 64 64" fill="none" stroke="#444" stroke-width="3"><ellipse cx="32" cy="38" rx="16" ry="10" fill="#bbb"/><polyline points="26,48 32,56 38,48" stroke="#444" fill="none"/></svg>`,
+      unknown:`<svg class="weather-icon" viewBox="0 0 64 64" fill="none" stroke="#bbb" stroke-width="2"><circle cx="32" cy="36" r="12" fill="#d8d8d8"/><text x="32" y="44" font-size="20" text-anchor="middle" fill="#888">?</text></svg>`,
+    };
+
+    function weekDayLabel(dt) {
+      const date = new Date(dt);
+      const today = new Date();
+      if (
+        date.getFullYear() === today.getFullYear() &&
+        date.getMonth() === today.getMonth() &&
+        date.getDate() === today.getDate()
+      ) return "Today";
+      return date.toLocaleDateString(undefined, {weekday:'short'});
+    }
+
+    function updateWeather() {
+      fetch('/api/weather').then(r => r.json()).then(d => {
+        if (!d.forecast) return;
+        const cards = d.forecast.map((day, idx) => {
+          let cardClass = "weather-card";
+          if (weekDayLabel(day.date) === "Today") cardClass += " today";
+          return `<div class="${cardClass}">
+            ${weatherIcons[day.icon]||weatherIcons.unknown}
+            <div class="weather-day">${weekDayLabel(day.date)}</div>
+            <div class="weather-temp">${day.max}&deg;F <span style="font-size:1.1rem;color:#999;">/ ${day.min}&deg;F</span></div>
+            <div class="weather-desc">${day.desc}</div>
+          </div>`;
+        }).join("");
+        document.getElementById("forecast-row").innerHTML = cards;
+      });
+    }
+    updateWeather();
+    setInterval(updateWeather, 20*60*1000); // every 20 minutes
+  </script>
+</body>
+</html>

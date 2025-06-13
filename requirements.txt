@@ -1,0 +1,6 @@
+flask
+apscheduler
+schedule
+fidelity-api
+playwright          # pulls Playwright core
+robin_stocks

@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E-Ink Dashboard v6</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/weather-icons/2.0.10/css/weather-icons.min.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+            background-color: #FFFFFF;
+            color: #181818;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-weight: 500;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        .dashboard-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            padding: 4%;
+            background-color: #FFFFFF;
+            border-radius: 0;
+            box-shadow: none;
+        }
+
+        .week-view-panel {
+            flex-grow: 0.70;
+            display: flex;
+            flex-direction: column;
+            background-color: #FFFFFF;
+            border-radius: 12px;
+            border: 1px solid #D0D0D0;
+            overflow: hidden;
+        }
+
+        .week-view-header {
+            font-family: "Google Sans", "Product Sans", Roboto, sans-serif;
+            font-size: 3.0rem; /* Adjusted size */
+            font-weight: 600;
+            padding: 12px 20px; /* Adjusted padding */
+            color: #202020;
+            text-align: center;
+            border-bottom: 1px solid #D0D0D0;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .week-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 10px;
+            padding: 12px; /* Adjusted padding */
+            flex-grow: 1;
+        }
+
+        .day-cell {
+            padding: 10px; /* Adjusted padding */
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            border-radius: 10px;
+            border: 1px solid #C8C8C8; /* Default border */
+        }
+
+        /* Grayscale styling for day cells: Darker = Today */
+        .day-cell.center-0 { background-color: #B0B0B0; border-color: #909090; } /* Today - darkest */
+        .day-cell.center-0 * { color: #000000 !important; }
+        /* Keep distinct border for info boxes in dark cells, but background is now white (globally set below) */
+        .day-cell.center-0 .day-weather-details .weather-info-box { border-color: #808080;}
+        .day-cell.center-0 .weather-info-box .wi { color: #000000 !important; }
+        .day-cell.center-0 .weather-temps .low-temp { color: #202020 !important; }
+        .day-cell.center-0 .uv-box .uv-label { color: #101010 !important; }
+        /* Keep distinct border for event items in dark cells, background is white */
+        .day-cell.center-0 .day-events li { border-color: #888888; }
+
+
+        .day-cell.center-1 { background-color: #C8C8C8; border-color: #A8A8A8; } /* Yesterday/Tomorrow */
+        .day-cell.center-1 .day-weather-details .weather-info-box { border-color: #989898;}
+        .day-cell.center-1 .day-events li { border-color: #A0A0A0; }
+
+
+        .day-cell.center-2 { background-color: #E0E0E0; border-color: #C0C0C0; } /* Two days ago / Day after tomorrow */
+        .day-cell.center-2 .day-weather-details .weather-info-box { border-color: #B0B0B0;}
+        .day-cell.center-2 .day-events li { border-color: #B8B8B8; }
+
+        .day-cell:not([class*="center-"]) { background-color: #F0F0F0; border-color: #D0D0D0; } /* Fallback */
+        .day-cell:not([class*="center-"]) .day-weather-details .weather-info-box { border-color: #C0C0C0;}
+
+
+        .day-cell-header {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid rgba(0,0,0,0.1);
+        }
+        .day-name {
+            font-size: 1.8rem;
+            font-weight: 600;
+            color: #181818;
+            margin-bottom: 2px;
+        }
+
+        .day-date {
+            font-size: 1.3rem;
+            color: #383838;
+        }
+
+        .day-weather-details {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+            align-items: stretch;
+        }
+
+        .weather-info-box {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 6px;
+            border-radius: 8px;
+            background-color: #FFFFFF; /* CHANGED to white */
+            border: 1px solid #C0C0C0;
+            text-align: center;
+            min-height: 75px;
+        }
+
+        .temp-box .wi {
+            font-size: 3.5rem;
+            color: #181818;
+            margin-bottom: 3px;
+        }
+        .weather-temps {
+            font-size: 1.7rem;
+            line-height: 1.1;
+            color: #181818;
+            font-weight: 500;
+        }
+        .weather-temps .low-temp {
+            font-size: 1.3rem;
+            color: #404040;
+        }
+
+        .uv-box .uv-label {
+            font-size: 1.2rem;
+            color: #303030;
+            margin-bottom: 2px;
+            font-weight: 500;
+        }
+        .uv-box .uv-value {
+            font-size: 2.0rem;
+            font-weight: 600;
+            color: #000000;
+        }
+        .uv-box .uv-value.na {
+            font-size: 1.6rem;
+            font-weight: 500;
+            color: #505050;
+        }
+
+        .day-events {
+            font-size: 1.6rem;
+            line-height: 1.2;
+            flex-grow: 1;
+            overflow: hidden;
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .day-events ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .day-events li {
+            background-color: #FFFFFF; /* CHANGED to white */
+            color: #000000;
+            padding: 5px 8px;
+            border-radius: 6px;
+            white-space: normal;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-weight: 500;
+            border: 1px solid #D0D0D0;
+            font-size: 1.5rem;
+            line-height: 1.2;
+        }
+
+        .event-time {
+            font-weight: 600;
+            color: #000000;
+            margin-right: 5px;
+        }
+
+        .networth-section-wrapper {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 8px 0;
+            flex-grow: 0.30;
+        }
+        .networth-panel {
+            width: 55%;
+            max-width: 450px;
+            padding: 18px;
+            text-align: center;
+            background-color: #D0D0D0;
+            border-radius: 12px;
+            border: 1px solid #B0B0B0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 160px;
+            max-height: 180px;
+        }
+        .networth-label {
+            font-size: 2.1rem;
+            color: #404040;
+            margin-bottom: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 500;
+        }
+        #money {
+            font-family: "Google Sans", "Product Sans", Roboto, sans-serif;
+            font-size: 3.8rem;
+            color: #101010;
+            line-height: 1.1;
+            font-weight: 700;
+            margin: 2px 0;
+        }
+        .delta-container {
+            margin-top: 4px;
+            font-size: 1.9rem;
+            font-weight: 600;
+        }
+        .delta-symbol { margin-right: 4px; }
+        .delta-up { color: #101010; }
+        .delta-down { color: #101010; }
+
+        .system-status {
+            text-align: center;
+            font-size: 1.0rem;
+            color: #585858;
+            padding: 4px 0 0 0;
+            font-weight: 400;
+        }
+
+        @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;600;700&display=swap');
+
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <div class="week-view-panel">
+            <div class="week-view-header">WEEKLY OVERVIEW</div>
+            <div class="week-grid" id="week-grid-content">
+                <!-- 5 Day cells will be injected here by JS -->
+            </div>
+        </div>
+
+        <div class="networth-section-wrapper">
+            <div class="networth-panel">
+                <div class="networth-label">Net Worth</div>
+                <div id="money">--</div>
+                <div class="delta-container">
+                    <span class="delta-symbol" id="delta-symbol-char"></span>
+                    <span id="delta" class="delta-val">--</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="system-status">
+            Last Update: <span id="updated">--</span>
+        </div>
+    </div>
+
+    <script>
+    const customIconToWiClass = {
+        'sun': 'wi-day-sunny',
+        'mostly_sun': 'wi-day-sunny-overcast',
+        'cloud': 'wi-cloudy',
+        'fog': 'wi-fog',
+        'drizzle': 'wi-sprinkle',
+        'shower': 'wi-showers',
+        'rain': 'wi-rain',
+        'snow': 'wi-snow',
+        'storm': 'wi-thunderstorm',
+        'unknown': 'wi-na'
+    };
+
+    function getDayCellClass(dayOffsetFromToday) {
+        // dayOffsetFromToday is -2, -1, 0, 1, 2
+        return `center-${Math.abs(dayOffsetFromToday)}`;
+    }
+
+    async function updateCombinedWeekView() {
+        try {
+            const weatherResp = await fetch('/api/weather');
+            if (!weatherResp.ok) throw new Error(`Weather API error: ${weatherResp.status} ${await weatherResp.text()}`);
+            const weatherData = await weatherResp.json();
+
+            let eventsData = { events: [] };
+            try {
+                const eventsResp = await fetch('/api/calendar');
+                if (eventsResp.ok) {
+                    eventsData = await eventsResp.json();
+                } else {
+                    console.warn(`Calendar API error: ${eventsResp.status} ${await eventsResp.text()}`);
+                }
+            } catch (e) {
+                console.error("Error fetching calendar data:", e);
+            }
+
+            let html = "";
+            const todayBase = new Date();
+            todayBase.setHours(0, 0, 0, 0);
+
+            if (!weatherData.forecast || !Array.isArray(weatherData.forecast) || weatherData.forecast.length !== 5) {
+                console.error("Received invalid forecast data structure:", weatherData);
+                document.getElementById('week-grid-content').innerHTML = "<p style='text-align:center;padding:10px;color:red;'>Error: Weather data format incorrect.</p>";
+                return;
+            }
+
+            for (let dayOffset = -2; dayOffset <= 2; dayOffset++) {
+                const array_idx = dayOffset + 2;
+
+                const currentDate = new Date(todayBase);
+                currentDate.setDate(todayBase.getDate() + dayOffset);
+                const currentDateStr = currentDate.toISOString().split('T')[0];
+
+                const dayWeather = weatherData.forecast[array_idx];
+                const dayEvents = (eventsData && Array.isArray(eventsData.events)) ? eventsData.events.filter(e => e.date === currentDateStr) : [];
+
+                const dayCellClasses = ['day-cell', getDayCellClass(dayOffset)];
+                let dayLabel = currentDate.toLocaleDateString(undefined, { weekday: 'short' }).toUpperCase();
+                if (dayOffset === 0) dayLabel = "TODAY";
+                else if (dayOffset === 1) dayLabel = "TMRW";
+
+                html += `<div class="${dayCellClasses.join(' ')}">`;
+                html += ` <div class="day-cell-header">
+                            <span class="day-name">${dayLabel}</span>
+                            <span class="day-date">${currentDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                          </div>`;
+
+                html += `<div class="day-weather-details">`;
+
+                html += `<div class="weather-info-box temp-box">`;
+                if (dayWeather && dayWeather.icon && dayWeather.max !== null && dayWeather.min !== null) {
+                    const weatherIconClass = customIconToWiClass[dayWeather.icon] || customIconToWiClass['unknown'];
+                    html += `<i class="wi ${weatherIconClass}"></i>
+                             <div class="weather-temps">
+                               ${Math.round(dayWeather.max)}° <span class="low-temp">/ ${Math.round(dayWeather.min)}°</span>
+                             </div>`;
+                } else {
+                    html += `<i class="wi ${customIconToWiClass['unknown']}"></i> <div class="weather-temps">N/A</div>`;
+                }
+                html += `</div>`;
+
+                html += `<div class="weather-info-box uv-box">`;
+                html += `<div class="uv-label">Max UV</div>`;
+                if (dayWeather && dayWeather.uv_index_max !== null && dayWeather.uv_index_max !== undefined) {
+                    html += `<div class="uv-value">${Math.round(dayWeather.uv_index_max)}</div>`;
+                } else {
+                    html += `<div class="uv-value na">N/A</div>`;
+                }
+                html += `</div>`;
+                html += `</div>`;
+
+                html += `<div class="day-events"><ul>`;
+                if (dayEvents.length > 0) {
+                    dayEvents.slice(0, 2).forEach(event => {
+                        html += `<li><span class="event-time">${event.time || ''}</span>${event.title}</li>`;
+                    });
+                }
+                html += `</ul></div>`;
+                html += `</div>`;
+            }
+            document.getElementById('week-grid-content').innerHTML = html;
+        } catch (error) {
+            console.error("Error updating week view:", error);
+            document.getElementById('week-grid-content').innerHTML = `<p style="text-align:center; padding:20px; color:red;">Failed to load week view. Error: ${error.message}</p>`;
+        }
+    }
+
+    const fmt = n => n == null ? '--' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+
+    async function updateNetworth() {
+        try {
+            const res = await fetch('/api/data');
+            if (!res.ok) throw new Error(`Networth API error: ${res.status} ${await res.text()}`);
+            const d = await res.json();
+            processApiData(d);
+        } catch (e) {
+            console.error("Error updating networth:", e);
+            processApiData({error: true, net_worth: null, change: null, last_updated: new Date().toISOString() });
+        }
+    }
+
+    function processApiData(d) {
+        document.getElementById('money').textContent = (d.error || d.net_worth === null) ? "ERROR" : fmt(d.net_worth);
+        const val = d.change == null ? 0 : parseFloat(d.change) || 0;
+        let deltaText = ''; let deltaSymbolChar = ''; let deltaClass = '';
+
+        if (val > 0) { deltaText = '+' + fmt(val).replace(/[$\s]/g, ''); deltaSymbolChar = '▲'; deltaClass = 'delta-up'; }
+        else if (val < 0) { deltaText = fmt(val).replace(/[$\s]/g, ''); deltaSymbolChar = '▼'; deltaClass = 'delta-down'; }
+        else { deltaText = fmt(0).replace(/[$\s]/g, ''); deltaSymbolChar = '–'; }
+
+        document.getElementById('delta').textContent = deltaText;
+        document.getElementById('delta-symbol-char').textContent = deltaSymbolChar;
+        document.getElementById('delta-symbol-char').className = `delta-symbol ${deltaClass}`;
+        document.getElementById('delta').className = `delta-val ${deltaClass}`;
+
+        let lastUpdatedText = '--';
+        if (d.last_updated) {
+            try {
+                let dateObj = new Date(d.last_updated);
+                if (isNaN(dateObj.getTime())) {
+                    let parsableDateStr = d.last_updated.replace(/ (\d{1,2}:\d{2} [AP]M)$/, 'T$1');
+                    if (!parsableDateStr.includes('T')) {
+                         if (d.last_updated.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                            dateObj = new Date(d.last_updated + "T00:00:00");
+                         }
+                    } else {
+                         dateObj = new Date(parsableDateStr);
+                    }
+                }
+
+                if (!isNaN(dateObj.getTime())) {
+                    lastUpdatedText = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                } else if (typeof d.last_updated === 'string') {
+                    if (d.last_updated.match(/^\d{1,2}:\d{2}\s*(AM|PM)?$/i)) {
+                        lastUpdatedText = d.last_updated;
+                    } else {
+                        console.warn("Could not parse last_updated timestamp:", d.last_updated);
+                        lastUpdatedText = d.last_updated.substring(0,16);
+                    }
+                }
+            } catch (e) {
+                console.error("Error parsing last_updated date:", e, d.last_updated);
+                lastUpdatedText = d.last_updated || '--';
+            }
+        }
+        document.getElementById('updated').textContent = lastUpdatedText;
+    }
+
+    function initializeDashboard() {
+        updateCombinedWeekView();
+        updateNetworth();
+        setInterval(updateCombinedWeekView, 15 * 60 * 1000);
+        setInterval(updateNetworth, 5 * 60 * 1000);
+    }
+    document.addEventListener('DOMContentLoaded', initializeDashboard);
+</script>
+</body>
+</html>

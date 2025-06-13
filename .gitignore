@@ -1,0 +1,44 @@
+# .gitignore
+
+# ===================================================================
+# SECURITY - Credentials, Secrets, and API Keys
+# ===================================================================
+
+# Ignore Google API client secrets and the generated OAuth token.
+/Host/calendar_credentials.json
+/Host/token.pickle
+
+# Ignore the main configuration file containing usernames, passwords,
+# and other secrets (Fidelity, Robinhood, etc.).
+/Host/config.json
+
+# Ignore session state/cookies from browser automation.
+# These files allow sessions to be resumed and are sensitive.
+/Host/Fidelity.json
+/Host/cookies.json
+
+
+# ===================================================================
+# APPLICATION STATE - Dynamic and Sensitive Data
+# ===================================================================
+
+# Ignore the application's state file, which contains net worth
+# history and other frequently changing data.
+/Host/state.json
+
+
+# ===================================================================
+# PYTHON - Common files to ignore
+# ===================================================================
+
+# Virtual Environment folder (e.g., venv, .venv)
+venv/
+.venv/
+env/
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
