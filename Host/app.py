@@ -8,7 +8,8 @@ from flask import Flask, jsonify, render_template, request
 from fidelity import FidelityAutomation
 from robinhood import get_robinhood_balance
 from weather import get_chicago_weekly
-from google_calendar import get_events_surrounding_days
+from google_calendar import get_events_surrounding_days, get_upcoming_events
+from health import get_weekly_health_summary
 
 CONFIG = "config.json"
 STATE = "state.json"
@@ -36,8 +37,6 @@ def manual_login_flow():
     sys.exit(0)
 
 
-# NOTE: User specifically requested not to change this function's logic,
-# as it is confirmed to be working correctly. Do not invert logic.
 def fetch_net_worth():
     print("[fetch] Updating account balances…")
     try:
@@ -54,7 +53,6 @@ def fetch_net_worth():
             code = input("Enter 2-factor code: ")
             bot.login_2FA(code)
 
-        # total is current total net worth, day_change is Fidelity's reported change for the day
         total, day_change_from_fidelity = bot.get_total_networth_and_daychange()
         if total is None:
             print("Could not retrieve net worth from Fidelity")
@@ -67,47 +65,30 @@ def fetch_net_worth():
                 rh_cfg["username"], rh_cfg["password"], rh_cfg["totp_secret"]
             )
 
-        # This is the newly fetched, current total net worth
         current_fetched_net_worth = total
         if rh_balance is not None:
             current_fetched_net_worth += rh_balance
             print(f"[fetch] Robinhood: {rh_balance:,.2f} added")
 
         today_iso = date.today().isoformat()
-
-        # Get the net_worth stored from the *previous* run (might be from today or yesterday)
         net_worth_from_last_run = state.get("net_worth")
 
         if state.get("stamp") != today_iso:
-            # --- Day has changed OR it's the first run where stamp is None ---
             if net_worth_from_last_run is not None:
-                # It's a new day, and we have a previous day's net_worth from the last run.
-                # This becomes our 'yesterday's closing net worth'.
                 state["yesterday"] = net_worth_from_last_run
             else:
-                # It's a new day, but no net_worth_from_last_run (e.g., very first execution, or state was wiped).
-                # Initialize 'yesterday' based on the current fetch and Fidelity's reported day_change
-                # as the best estimate we have for a starting point.
                 state["yesterday"] = current_fetched_net_worth - (
                     day_change_from_fidelity if day_change_from_fidelity is not None else 0.0)
-        # If it's the same day (stamp == today_iso), 'yesterday' should remain unchanged from its last valid set.
-        # However, if 'yesterday' is still None (e.g. first run ever, and it didn't get set above), initialize it.
         elif state.get("yesterday") is None:
             state["yesterday"] = current_fetched_net_worth - (
                 day_change_from_fidelity if day_change_from_fidelity is not None else 0.0)
 
-        # Update net_worth with the current fetch
         state["net_worth"] = current_fetched_net_worth
         state["last_updated"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")
         state["error"] = False
         state["stamp"] = today_iso
-        # Optionally, store Fidelity's reported day change if needed for debugging, but not for main display delta
-        # state["fidelity_reported_day_change"] = day_change_from_fidelity
-
         save_state()
 
-        # For logging, calculate the delta that will actually be used by the API
-        # (current_net_worth - yesterday_net_worth)
         yesterday_nw_for_log = state.get("yesterday")
         actual_delta_for_log = 0.0
         if current_fetched_net_worth is not None and yesterday_nw_for_log is not None:
@@ -122,6 +103,17 @@ def fetch_net_worth():
         state["last_updated"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")
         save_state()
 
+def update_health_state():
+    print("[health_state] Updating health stats...")
+    try:
+        health_summary = get_weekly_health_summary()
+        state["health_stats"] = health_summary
+        save_state()
+        print("[health_state] Successfully updated health stats.")
+    except Exception as e:
+        print(f"[health_state] Error updating health state: {e}")
+        state["health_stats"] = None
+        save_state()
 
 def reschedule():
     schedule.clear()
@@ -167,23 +159,21 @@ def update_weather_state():
         state["weather_stamp"] = today_iso
         print(f"[weather_state] Updated weather_forecast for {today_iso} and set weather_stamp.")
         save_state()
-    except requests.exceptions.RequestException as e:
-        print(f"[weather_state] Network error fetching weather: {e}")
     except Exception as e:
         print(f"[weather_state] Error updating weather state: {e}")
 
 
 config = load_cfg()
-# Default state structure - 'change' key removed as it's now calculated on the fly
 default_state = dict(
     net_worth=None,
-    yesterday=None,  # Stores the net worth from the end of the previous day
+    yesterday=None,
     last_updated=None,
     error=False,
-    stamp=None,  # ISO date of the last net_worth update
+    stamp=None,
     weather_history=[None, None],
     weather_forecast=[],
-    weather_stamp=None
+    weather_stamp=None,
+    health_stats=None
 )
 state = default_state.copy()
 
@@ -193,9 +183,9 @@ if os.path.exists(STATE):
             loaded_state = json.load(f)
         for key, default_value in default_state.items():
             state[key] = loaded_state.get(key, default_value)
-        if not isinstance(state["weather_history"], list) or len(state["weather_history"]) != 2:
+        if not isinstance(state.get("weather_history"), list) or len(state["weather_history"]) != 2:
             state["weather_history"] = [None, None]
-        if not isinstance(state["weather_forecast"], list):
+        if not isinstance(state.get("weather_forecast"), list):
             state["weather_forecast"] = []
     except json.JSONDecodeError:
         print(f"[State Error] Failed to decode {STATE}. Starting with default state.")
@@ -214,16 +204,15 @@ args = parse_args()
 if args.manual_login:
     manual_login_flow()
 
-
 def periodic_update():
+    """Combined update job for weather, net worth, and health stats."""
     print("[periodic_update] Running combined update...")
     update_weather_state()
+    update_health_state()
     fetch_net_worth()
 
-
-print("[startup] Performing initial data fetch and weather update...")
-update_weather_state()
-fetch_net_worth()
+print("[startup] Performing initial data fetch...")
+periodic_update()
 
 reschedule()
 
@@ -248,20 +237,16 @@ def home():
 def api_data():
     current_net_worth = state.get("net_worth")
     yesterday_net_worth = state.get("yesterday")
-
-    # Always calculate delta based on current net_worth vs yesterday's net_worth stored in state
     delta_to_show = None
     if current_net_worth is not None and yesterday_net_worth is not None:
         try:
             delta_to_show = float(current_net_worth) - float(yesterday_net_worth)
         except (ValueError, TypeError):
-            print(
-                f"Error calculating delta: current_net_worth={current_net_worth}, yesterday_net_worth={yesterday_net_worth}")
-            delta_to_show = None  # Ensure it's None if calculation fails
+            delta_to_show = None
 
     return jsonify(
         net_worth=current_net_worth,
-        change=delta_to_show,  # This is the calculated delta
+        change=delta_to_show,
         last_updated=state.get("last_updated"),
         error=state.get("error", False)
     )
@@ -274,35 +259,21 @@ def api_weather():
         history = state.get("weather_history", [None, None])
         days_to_display_on_dashboard[0] = history[0]
         days_to_display_on_dashboard[1] = history[1]
-
         current_7day_forecast = state.get("weather_forecast", [])
         today_iso = date.today().isoformat()
         forecast_start_index_for_today = 0
 
         if current_7day_forecast and current_7day_forecast[0] and current_7day_forecast[0].get("date") != today_iso:
-            print(
-                f"[api/weather] Warning: Stored forecast[0] date '{current_7day_forecast[0].get('date')}' does not match today '{today_iso}'. Attempting to find today.")
-            found_today_in_forecast = False
             for idx, day_data in enumerate(current_7day_forecast):
                 if day_data and day_data.get("date") == today_iso:
                     forecast_start_index_for_today = idx
-                    found_today_in_forecast = True
                     break
-            if not found_today_in_forecast:
-                print(
-                    f"[api/weather] Error: Today '{today_iso}' not found in stored forecast. Weather for future days might be N/A.")
 
         for i in range(3):
             forecast_idx_in_7day_list = forecast_start_index_for_today + i
             if forecast_idx_in_7day_list < len(current_7day_forecast):
                 days_to_display_on_dashboard[2 + i] = current_7day_forecast[forecast_idx_in_7day_list]
-            else:
-                days_to_display_on_dashboard[2 + i] = None
 
-        for i in range(len(days_to_display_on_dashboard)):
-            if not isinstance(days_to_display_on_dashboard[i], (dict, type(None))):
-                print(f"[api/weather] Correcting invalid data type for day offset {i - 2} to None.")
-                days_to_display_on_dashboard[i] = None
         return jsonify({"forecast": days_to_display_on_dashboard})
     except Exception as e:
         print(f"[api/weather] API error: {e}")
@@ -318,6 +289,24 @@ def api_calendar():
         print(f"[calendar] API error: {e}")
         return jsonify({"error": "Could not fetch calendar events"}), 500
 
+@app.route("/api/upcoming_events")
+def api_upcoming_events():
+    try:
+        # Fetch events starting from 3 days from now, for the next 30 days.
+        events = get_upcoming_events(start_day_offset=3, num_days=30)
+        return jsonify({"events": events})
+    except Exception as e:
+        print(f"[upcoming_events] API error: {e}")
+        return jsonify({"error": "Could not fetch upcoming events"}), 500
+
+@app.route("/api/health")
+def api_health():
+    health_data = state.get("health_stats")
+    if health_data:
+        return jsonify(health_data)
+    else:
+        return jsonify(None)
+
 
 @app.route("/api/refresh", methods=["POST"])
 def api_refresh():
@@ -329,7 +318,6 @@ def api_refresh():
         with open(CONFIG, "w") as f:
             json.dump(config, f, indent=2)
     except IOError as e:
-        print(f"Error saving config: {e}")
         return jsonify({"error": "Failed to save config"}), 500
     reschedule()
     return jsonify({"status": "ok", "new_schedule": schedule.jobs})
