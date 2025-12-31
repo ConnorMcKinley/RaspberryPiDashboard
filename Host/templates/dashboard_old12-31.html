@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E-Ink Dashboard v12 (Final)</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/weather-icons/2.0.10/css/weather-icons.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;600;700&display=swap');
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+            background-color: #FFFFFF;
+            color: #181818;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-weight: 500;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        .dashboard-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            padding: 3%;
+            background-color: #FFFFFF;
+        }
+
+        /* --- WEEK VIEW STYLES (Unchanged) --- */
+        .week-view-panel {
+            flex-basis: 65%;
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            background-color: #FFFFFF;
+            border-radius: 12px;
+            border: 1px solid #D0D0D0;
+            overflow: hidden;
+        }
+        .week-view-header {
+            font-family: "Google Sans", "Product Sans", Roboto, sans-serif;
+            font-size: 2.8rem; font-weight: 600; padding: 12px 20px;
+            color: #202020; text-align: center; border-bottom: 1px solid #D0D0D0;
+            text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .week-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; padding: 12px; flex-grow: 1; }
+        .day-cell { padding: 10px; display: flex; flex-direction: column; overflow: hidden; border-radius: 10px; border: 1px solid #C8C8C8; }
+        .day-cell.center-0 { background-color: #B0B0B0; border-color: #909090; }
+        .day-cell.center-0 * { color: #000000 !important; }
+        .day-cell.center-0 .day-weather-details .weather-info-box, .day-cell.center-0 .day-events li { border-color: #888888; }
+        .day-cell.center-0 .weather-info-box .wi { color: #000000 !important; }
+        .day-cell.center-1 { background-color: #C8C8C8; border-color: #A8A8A8; }
+        .day-cell.center-1 .day-weather-details .weather-info-box, .day-cell.center-1 .day-events li { border-color: #A0A0A0; }
+        .day-cell.center-2 { background-color: #E0E0E0; border-color: #C0C0C0; }
+        .day-cell.center-2 .day-weather-details .weather-info-box, .day-cell.center-2 .day-events li { border-color: #B8B8B8; }
+        .day-cell-header { display: flex; flex-direction: column; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid rgba(0,0,0,0.1); }
+        .day-name { font-size: 1.8rem; font-weight: 600; }
+        .day-date { font-size: 1.3rem; color: #383838; }
+        .day-weather-details { display: flex; gap: 8px; margin-bottom: 10px; align-items: stretch; }
+        .weather-info-box { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 6px; border-radius: 8px; background-color: #FFFFFF; border: 1px solid #C0C0C0; text-align: center; min-height: 75px; }
+        .temp-box .wi { font-size: 3.5rem; }
+        .weather-temps { font-size: 1.7rem; line-height: 1.1; font-weight: 500; }
+        .weather-temps .low-temp { font-size: 1.3rem; color: #404040; }
+        .uv-box .uv-label { font-size: 1.2rem; margin-bottom: 2px; }
+        .uv-box .uv-value { font-size: 2.0rem; font-weight: 600; }
+        .uv-box .uv-value.na { font-size: 1.6rem; font-weight: 500; color: #505050; }
+        .day-events { flex-grow: 1; overflow: hidden; display: flex; flex-direction: column; gap: 5px; }
+        .day-events ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 5px; }
+        .day-events li {
+            background-color: #FFFFFF; padding: 5px 8px; border-radius: 6px;
+            white-space: normal; overflow: hidden; text-overflow: ellipsis;
+            border: 1px solid #D0D0D0; font-size: 1.5rem; line-height: 1.3;
+            max-height: 2.8em; /* Roughly 2 lines with some buffer */
+        }
+        .event-time { font-weight: 600; margin-right: 5px; }
+
+        /* --- STATS & EVENTS SECTION --- */
+        .stats-section-wrapper {
+            flex-basis: 35%; flex-shrink: 0; min-height: 0;
+            display: grid;
+            grid-template-columns: 2fr 1.5fr 2fr;
+            gap: 20px;
+        }
+        .health-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            grid-template-rows: repeat(2, 1fr);
+            gap: 20px;
+        }
+        .stat-panel {
+            padding: 15px; text-align: center;
+            background-color: #E8E8E8; border-radius: 12px; border: 1px solid #C8C8C8;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+        }
+        .stat-label { font-size: 1.7rem; color: #404040; margin-bottom: 2px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 500; }
+        .stat-value { font-family: "Google Sans", "Product Sans", Roboto, sans-serif; font-size: 3.2rem; color: #101010; line-height: 1.1; font-weight: 700; margin: 2px 0; }
+        .stat-change-container { margin-top: 4px; font-size: 1.6rem; font-weight: 600; }
+        .change-symbol { margin-right: 4px; }
+        .change-label { font-size: 1.2rem; color: #505050; margin-top: 2px; }
+
+        #upcoming-events-panel {
+            padding: 15px; justify-content: flex-start;
+            background-color: #F0F0F0; border-color: #D0D0D0;
+            overflow: hidden;
+        }
+        .events-panel-header {
+            font-family: "Google Sans", "Product Sans", Roboto, sans-serif;
+            font-size: 1.7rem; font-weight: 600; padding-bottom: 8px; margin-bottom: 8px;
+            color: #202020; text-align: center; border-bottom: 1px solid #D0D0D0;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            flex-shrink: 0;
+        }
+        .upcoming-events-list {
+            list-style: none; padding: 0; margin: 0;
+            overflow: hidden;
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 6px;
+        }
+        .upcoming-event-item {
+            background-color: #FFFFFF;
+            padding: 5px 8px;
+            border-radius: 6px;
+            border: 1px solid #D0D0D0;
+            font-size: 1.5rem;
+            line-height: 1.3;
+            height: 2.8em; /* Exactly match the height of day-events items */
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2; /* Limit to 2 lines */
+            -webkit-box-orient: vertical;
+            text-overflow: ellipsis;
+        }
+        .upcoming-date-prefix { font-weight: 600; font-size: 1.3rem; margin-right: 6px; color: #333; }
+        .upcoming-time-prefix { font-weight: 600; margin-right: 6px; }
+
+        .no-events-message {
+            grid-column: 1 / -1; /* Span both columns */
+            text-align: center; color: #666; font-size: 1.6rem; padding: 20px;
+            height: 100%; display: flex; align-items: center; justify-content: center;
+        }
+
+        .system-status { flex-shrink: 0; text-align: center; font-size: 1.1rem; color: #585858; padding-top: 5px; font-weight: 400; }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <div class="week-view-panel">
+            <div class="week-view-header">WEEKLY OVERVIEW</div>
+            <div class="week-grid" id="week-grid-content"></div>
+        </div>
+
+        <div class="stats-section-wrapper">
+            <div class="health-stats-grid">
+                <div class="stat-panel">
+                    <div class="stat-label">Steps</div>
+                    <div id="steps-value" class="stat-value">--</div>
+                    <div class="stat-change-container">
+                        <span class="change-symbol" id="steps-symbol"></span>
+                        <span id="steps-change">--</span>
+                    </div>
+                    <div class="change-label">vs Last Week Avg</div>
+                </div>
+                <div class="stat-panel">
+                    <div class="stat-label">Exercise</div>
+                    <div id="exercise-value" class="stat-value">--</div>
+                    <div class="stat-change-container">
+                        <span class="change-symbol" id="exercise-symbol"></span>
+                        <span id="exercise-change">--</span>
+                    </div>
+                    <div class="change-label">vs Last Week Avg</div>
+                </div>
+                <div class="stat-panel">
+                    <div class="stat-label">Resting HR</div>
+                    <div id="hr-value" class="stat-value">--</div>
+                    <div class="stat-change-container">
+                        <span class="change-symbol" id="hr-symbol"></span>
+                        <span id="hr-change">--</span>
+                    </div>
+                    <div class="change-label">vs Last Week Avg</div>
+                </div>
+                <div class="stat-panel">
+                    <div class="stat-label">Calories</div>
+                    <div id="calories-value" class="stat-value">--</div>
+                    <div class="stat-change-container">
+                        <span class="change-symbol" id="calories-symbol"></span>
+                        <span id="calories-change">--</span>
+                    </div>
+                    <div class="change-label">vs Last Week Avg</div>
+                </div>
+            </div>
+
+            <div id="upcoming-events-panel" class="stat-panel">
+                <div class="events-panel-header">Upcoming Events</div>
+                <ul id="upcoming-events-list" class="upcoming-events-list"></ul>
+            </div>
+
+            <div class="stat-panel" id="networth-panel">
+                <div class="stat-label">Portfolio Value</div>
+                <div id="money" class="stat-value" style="font-size: 4rem;">--</div>
+                <div class="stat-change-container">
+                    <span class="change-symbol" id="delta-symbol-char"></span>
+                    <span id="delta">--</span>
+                </div>
+                <div class="change-label">Since Last Update</div>
+            </div>
+        </div>
+
+        <div class="system-status">
+            Last Update: <span id="updated">--</span>
+        </div>
+    </div>
+
+    <script>
+    const customIconToWiClass = { 'sun': 'wi-day-sunny', 'mostly_sun': 'wi-day-sunny-overcast', 'cloud': 'wi-cloudy', 'fog': 'wi-fog', 'drizzle': 'wi-sprinkle', 'shower': 'wi-showers', 'rain': 'wi-rain', 'snow': 'wi-snow', 'storm': 'wi-thunderstorm', 'unknown': 'wi-na' };
+    const fmtCurrency = n => n == null ? '--' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+    const fmtNumber = n => n == null ? '--' : new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(n);
+
+    function getDayCellClass(dayOffsetFromToday) { return `center-${Math.abs(dayOffsetFromToday)}`; }
+
+    async function updateCombinedWeekView() {
+        try {
+            const [weatherResp, eventsResp] = await Promise.all([
+                fetch('/api/weather').catch(e => { console.error("Weather fetch failed:", e); return null; }),
+                fetch('/api/calendar').catch(e => { console.error("Calendar fetch failed:", e); return null; })
+            ]);
+            if (!weatherResp || !weatherResp.ok) throw new Error(`Weather API error: ${weatherResp ? weatherResp.status : 'Network Error'}`);
+            const weatherData = await weatherResp.json();
+            let eventsData = { events: [] };
+            if (eventsResp && eventsResp.ok) { eventsData = await eventsResp.json(); }
+            else { console.warn(`Calendar API error: ${eventsResp ? eventsResp.status : 'Network Error'}`); }
+
+            let html = "";
+            const todayBase = new Date(); todayBase.setHours(0, 0, 0, 0);
+            if (!weatherData.forecast || !Array.isArray(weatherData.forecast) || weatherData.forecast.length !== 5) {
+                document.getElementById('week-grid-content').innerHTML = "<p>Error: Weather data format incorrect.</p>"; return;
+            }
+            for (let dayOffset = -2; dayOffset <= 2; dayOffset++) {
+                const array_idx = dayOffset + 2;
+                const currentDate = new Date(todayBase); currentDate.setDate(todayBase.getDate() + dayOffset);
+                const currentDateStr = currentDate.toISOString().split('T')[0];
+                const dayWeather = weatherData.forecast[array_idx];
+                const dayEvents = (eventsData.events || []).filter(e => e.date === currentDateStr);
+                const dayCellClasses = ['day-cell', getDayCellClass(dayOffset)];
+                let dayLabel = currentDate.toLocaleDateString(undefined, { weekday: 'short' }).toUpperCase();
+                if (dayOffset === 0) dayLabel = "TODAY"; else if (dayOffset === 1) dayLabel = "TMRW";
+                html += `<div class="${dayCellClasses.join(' ')}"> <div class="day-cell-header"> <span class="day-name">${dayLabel}</span> <span class="day-date">${currentDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span> </div>`;
+                html += `<div class="day-weather-details">`;
+                const weatherIconClass = (dayWeather && dayWeather.icon) ? customIconToWiClass[dayWeather.icon] : customIconToWiClass['unknown'];
+                html += `<div class="weather-info-box temp-box"> <i class="wi ${weatherIconClass}"></i>`;
+                if (dayWeather && dayWeather.max !== null) html += `<div class="weather-temps">${Math.round(dayWeather.max)}° <span class="low-temp">/ ${Math.round(dayWeather.min)}°</span></div>`;
+                else html += `<div class="weather-temps">N/A</div>`;
+                html += `</div>`;
+                html += `<div class="weather-info-box uv-box"> <div class="uv-label">Max UV</div>`;
+                if (dayWeather && dayWeather.uv_index_max !== null) html += `<div class="uv-value">${Math.round(dayWeather.uv_index_max)}</div>`;
+                else html += `<div class="uv-value na">N/A</div>`;
+                html += `</div></div>`;
+                html += `<div class="day-events"><ul>`;
+                if (dayEvents.length > 0) { dayEvents.slice(0, 2).forEach(event => { html += `<li><span class="event-time">${event.time || ''}</span>${event.title}</li>`; }); }
+                html += `</ul></div></div>`;
+            }
+            document.getElementById('week-grid-content').innerHTML = html;
+        } catch (error) { document.getElementById('week-grid-content').innerHTML = `<p>Failed to load week view. Error: ${error.message}</p>`; }
+    }
+
+    function updateNetworth() {
+        fetch('/api/data')
+            .then(res => res.ok ? res.json() : Promise.reject(res.status))
+            .then(d => {
+                document.getElementById('money').textContent = (d.error || d.net_worth === null) ? "ERROR" : fmtCurrency(d.net_worth);
+                const val = d.change == null ? 0 : parseFloat(d.change) || 0;
+                let deltaText = ''; let deltaSymbolChar = '';
+                if (val > 0.01) { deltaText = '+' + fmtCurrency(val).replace(/[$\s]/g, ''); deltaSymbolChar = '▲'; }
+                else if (val < -0.01) { deltaText = fmtCurrency(val).replace(/[$\s]/g, ''); deltaSymbolChar = '▼'; }
+                else { deltaText = fmtCurrency(0).replace(/[$\s]/g, ''); deltaSymbolChar = '–'; }
+                document.getElementById('delta').textContent = deltaText;
+                document.getElementById('delta-symbol-char').textContent = deltaSymbolChar;
+
+                let lastUpdatedText = '--';
+                if (d.last_updated) {
+                    try {
+                        const dateObj = new Date(d.last_updated.replace(' ', 'T'));
+                        if (isNaN(dateObj.getTime())) throw new Error("Invalid date object");
+                        lastUpdatedText = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    } catch (e) {
+                        console.error("Could not parse last_updated timestamp:", d.last_updated, e);
+                    }
+                }
+                document.getElementById('updated').textContent = lastUpdatedText;
+            })
+            .catch(e => {
+                document.getElementById('money').textContent = "ERROR";
+                document.getElementById('updated').textContent = '--';
+            });
+    }
+
+    function updateStatPanel(baseId, data, formatter) {
+        const valueEl = document.getElementById(`${baseId}-value`);
+        const symbolEl = document.getElementById(`${baseId}-symbol`);
+        const changeEl = document.getElementById(`${baseId}-change`);
+        if (!valueEl || !data) {
+            if(valueEl) valueEl.textContent = '--';
+            if(symbolEl) symbolEl.textContent = '';
+            if(changeEl) changeEl.textContent = '--';
+            return;
+        }
+        valueEl.textContent = formatter(data.avg);
+        const change = data.change || 0;
+        if (change > 0.1) { symbolEl.textContent = '▲'; changeEl.textContent = `+${change.toFixed(0)}%`; }
+        else if (change < -0.1) { symbolEl.textContent = '▼'; changeEl.textContent = `${change.toFixed(0)}%`; }
+        else { symbolEl.textContent = '–'; changeEl.textContent = '0%'; }
+    }
+
+    function updateHealthStats() {
+        fetch('/api/health')
+            .then(res => res.json())
+            .then(data => {
+                updateStatPanel('steps', data?.step_count, fmtNumber);
+                updateStatPanel('calories', data?.active_energy, fmtNumber);
+                updateStatPanel('exercise', data?.apple_exercise_time, val => `${fmtNumber(val)} min`);
+                updateStatPanel('hr', data?.resting_heart_rate, val => `${fmtNumber(val)} bpm`);
+            })
+            .catch(e => console.error("Error updating health stats:", e));
+    }
+
+    function updateUpcomingEvents() {
+        fetch('/api/upcoming_events')
+            .then(res => res.json())
+            .then(data => {
+                const listElement = document.getElementById('upcoming-events-list');
+                if (!data || !data.events || data.events.length === 0) {
+                    listElement.innerHTML = `<li class="no-events-message">No upcoming events.</li>`;
+                    return;
+                }
+                let html = '';
+                // Limit to 6 to fill a 2x3 grid.
+                data.events.slice(0, 6).forEach(event => {
+                    const eventDate = new Date(event.date + 'T12:00:00Z');
+                    const datePrefix = eventDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+                    html += `<li class="upcoming-event-item">
+                                <span class="upcoming-date-prefix">${datePrefix}:</span>
+                                ${event.time ? `<span class="upcoming-time-prefix">${event.time}</span>` : ''}
+                                ${event.title}
+                            </li>`;
+                });
+                listElement.innerHTML = html;
+            })
+            .catch(e => {
+                document.getElementById('upcoming-events-list').innerHTML = `<li class="no-events-message">Error loading events.</li>`;
+            });
+    }
+
+    function initializeDashboard() {
+        updateCombinedWeekView();
+        updateNetworth();
+        updateHealthStats();
+        updateUpcomingEvents();
+        setInterval(updateCombinedWeekView, 15 * 60 * 1000);
+        setInterval(updateNetworth, 5 * 60 * 1000);
+        setInterval(updateHealthStats, 15 * 60 * 1000);
+        setInterval(updateUpcomingEvents, 15 * 60 * 1000);
+    }
+    document.addEventListener('DOMContentLoaded', initializeDashboard);
+    </script>
+</body>
+</html>

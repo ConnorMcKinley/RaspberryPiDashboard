@@ -5,11 +5,13 @@ from datetime import datetime, date, timedelta
 import schedule
 from flask import Flask, jsonify, render_template, request
 
+# Import modules
 from fidelity import FidelityAutomation
-from robinhood import get_robinhood_balance
+from robinhood import get_robinhood_positions
 from weather import get_chicago_weekly
 from google_calendar import get_events_surrounding_days, get_upcoming_events
 from health import get_weekly_health_summary
+from news import get_political_news
 
 CONFIG = "config.json"
 STATE = "state.json"
@@ -38,12 +40,13 @@ def manual_login_flow():
 
 
 def fetch_net_worth():
-    print("[fetch] Updating account balances…")
+    print("[fetch] Updating account balances and details…")
     try:
         cfg = config["fidelity"]
         rh_cfg = config.get("robinhood", {})
-        bot = FidelityAutomation(headless=True, debug=False, save_state=True)
 
+        # 1. Fidelity
+        bot = FidelityAutomation(headless=True, debug=False, save_state=True)
         need_pw, need_2fa = bot.login(cfg["username"], cfg["password"], save_device=True,
                                       totp_secret=cfg.get("totp_secret"))
         if not need_pw and not need_2fa:
@@ -53,23 +56,35 @@ def fetch_net_worth():
             code = input("Enter 2-factor code: ")
             bot.login_2FA(code)
 
-        total, day_change_from_fidelity = bot.get_total_networth_and_daychange()
-        if total is None:
-            print("Could not retrieve net worth from Fidelity")
-            raise Exception("Could not retrieve net worth from Fidelity")
+        # Get detailed portfolio structure
+        fidelity_data = bot.get_detailed_portfolio()
         bot.close_browser()
 
-        rh_balance = None
-        if rh_cfg and rh_cfg.get("username") and rh_cfg.get("password") and rh_cfg.get("totp_secret"):
-            rh_balance = get_robinhood_balance(
+        if not fidelity_data or fidelity_data.get('total_net_worth') == 0:
+            print("Warning: Fidelity data seems empty")
+
+        # 2. Robinhood
+        rh_data = None
+        if rh_cfg and rh_cfg.get("username"):
+            rh_data = get_robinhood_positions(
                 rh_cfg["username"], rh_cfg["password"], rh_cfg["totp_secret"]
             )
 
-        current_fetched_net_worth = total
-        if rh_balance is not None:
-            current_fetched_net_worth += rh_balance
-            print(f"[fetch] Robinhood: {rh_balance:,.2f} added")
+        # Combine Totals
+        total_nw = fidelity_data.get('total_net_worth', 0.0)
+        if rh_data:
+            total_nw += rh_data.get('equity', 0.0)
+            print(f"[fetch] Robinhood: {rh_data.get('equity'):,.2f} added")
 
+        # Build Portfolio Details Object for State
+        portfolio_details = {
+            "total_value": total_nw,
+            "fidelity": fidelity_data.get("fidelity_accounts", []),
+            "non_fidelity": fidelity_data.get("non_fidelity_accounts", []),
+            "robinhood": rh_data.get("positions", []) if rh_data else []
+        }
+
+        # Update State logic (History etc)
         today_iso = date.today().isoformat()
         net_worth_from_last_run = state.get("net_worth")
 
@@ -77,31 +92,30 @@ def fetch_net_worth():
             if net_worth_from_last_run is not None:
                 state["yesterday"] = net_worth_from_last_run
             else:
-                state["yesterday"] = current_fetched_net_worth - (
-                    day_change_from_fidelity if day_change_from_fidelity is not None else 0.0)
+                # Fallback if no yesterday, just use current
+                state["yesterday"] = total_nw
         elif state.get("yesterday") is None:
-            state["yesterday"] = current_fetched_net_worth - (
-                day_change_from_fidelity if day_change_from_fidelity is not None else 0.0)
+            state["yesterday"] = total_nw
 
-        state["net_worth"] = current_fetched_net_worth
+        state["net_worth"] = total_nw
+        state["portfolio_details"] = portfolio_details  # Save detailed structure
         state["last_updated"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")
         state["error"] = False
         state["stamp"] = today_iso
         save_state()
 
         yesterday_nw_for_log = state.get("yesterday")
-        actual_delta_for_log = 0.0
-        if current_fetched_net_worth is not None and yesterday_nw_for_log is not None:
-            actual_delta_for_log = current_fetched_net_worth - yesterday_nw_for_log
+        actual_delta_for_log = total_nw - (yesterday_nw_for_log if yesterday_nw_for_log else total_nw)
 
-        print(
-            f"[fetch] Success – Net Worth ${current_fetched_net_worth:,.2f} (Δ {actual_delta_for_log:+,.2f} vs yesterday)")
+        print(f"[fetch] Success – Net Worth ${total_nw:,.2f} (Δ {actual_delta_for_log:+,.2f} vs yesterday)")
 
     except Exception as e:
         print(f"Fetch error: {e}")
+        # traceback.print_exc() # Optional: import traceback if needed
         state["error"] = True
         state["last_updated"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")
         save_state()
+
 
 def update_health_state():
     print("[health_state] Updating health stats...")
@@ -114,6 +128,7 @@ def update_health_state():
         print(f"[health_state] Error updating health state: {e}")
         state["health_stats"] = None
         save_state()
+
 
 def reschedule():
     schedule.clear()
@@ -128,39 +143,14 @@ def update_weather_state():
     print("[weather_state] Updating weather state...")
     try:
         new_7day_forecast_data = get_chicago_weekly()
-        if not new_7day_forecast_data or not isinstance(new_7day_forecast_data, list) or len(
-                new_7day_forecast_data) == 0:
-            print("[weather_state] Failed to fetch valid new forecast data.")
-            return
+        if not new_7day_forecast_data: return
 
         today_iso = date.today().isoformat()
-        last_weather_data_iso_date_in_stamp = state.get("weather_stamp")
-        current_full_forecast_previously_in_state = state.get("weather_forecast", [])
-
-        if last_weather_data_iso_date_in_stamp and last_weather_data_iso_date_in_stamp != today_iso:
-            old_weather_history = state.get("weather_history", [None, None])
-            data_for_new_yesterday = None
-            if current_full_forecast_previously_in_state and current_full_forecast_previously_in_state[0]:
-                if current_full_forecast_previously_in_state[0].get("date") == last_weather_data_iso_date_in_stamp:
-                    data_for_new_yesterday = current_full_forecast_previously_in_state[0]
-                else:
-                    for day_data in current_full_forecast_previously_in_state:
-                        if day_data and day_data.get("date") == last_weather_data_iso_date_in_stamp:
-                            data_for_new_yesterday = day_data
-                            break
-            if not data_for_new_yesterday:
-                print(
-                    f"[weather_state] Could not find data for '{last_weather_data_iso_date_in_stamp}' in previously stored forecast to move to history.")
-            state["weather_history"] = [old_weather_history[1], data_for_new_yesterday]
-            print(
-                f"[weather_state] Shifted weather history. New yesterday's date (if found): {data_for_new_yesterday.get('date') if data_for_new_yesterday else 'None'}")
-
         state["weather_forecast"] = new_7day_forecast_data
         state["weather_stamp"] = today_iso
-        print(f"[weather_state] Updated weather_forecast for {today_iso} and set weather_stamp.")
         save_state()
     except Exception as e:
-        print(f"[weather_state] Error updating weather state: {e}")
+        print(f"[weather_state] Error: {e}")
 
 
 config = load_cfg()
@@ -173,7 +163,8 @@ default_state = dict(
     weather_history=[None, None],
     weather_forecast=[],
     weather_stamp=None,
-    health_stats=None
+    health_stats=None,
+    portfolio_details=None
 )
 state = default_state.copy()
 
@@ -183,14 +174,8 @@ if os.path.exists(STATE):
             loaded_state = json.load(f)
         for key, default_value in default_state.items():
             state[key] = loaded_state.get(key, default_value)
-        if not isinstance(state.get("weather_history"), list) or len(state["weather_history"]) != 2:
-            state["weather_history"] = [None, None]
-        if not isinstance(state.get("weather_forecast"), list):
-            state["weather_forecast"] = []
-    except json.JSONDecodeError:
-        print(f"[State Error] Failed to decode {STATE}. Starting with default state.")
     except Exception as e:
-        print(f"[State Error] Failed to load {STATE}: {e}. Starting with default state.")
+        print(f"[State Error] Failed to load {STATE}: {e}")
 
 
 def parse_args():
@@ -204,14 +189,17 @@ args = parse_args()
 if args.manual_login:
     manual_login_flow()
 
+
 def periodic_update():
-    """Combined update job for weather, net worth, and health stats."""
+    """Combined update job."""
     print("[periodic_update] Running combined update...")
     update_weather_state()
     update_health_state()
     fetch_net_worth()
 
+
 print("[startup] Performing initial data fetch...")
+# Uncommented to ensure data is preloaded on server start
 periodic_update()
 
 reschedule()
@@ -248,7 +236,8 @@ def api_data():
         net_worth=current_net_worth,
         change=delta_to_show,
         last_updated=state.get("last_updated"),
-        error=state.get("error", False)
+        error=state.get("error", False),
+        details=state.get("portfolio_details")  # Send detailed data
     )
 
 
@@ -289,6 +278,7 @@ def api_calendar():
         print(f"[calendar] API error: {e}")
         return jsonify({"error": "Could not fetch calendar events"}), 500
 
+
 @app.route("/api/upcoming_events")
 def api_upcoming_events():
     try:
@@ -299,6 +289,7 @@ def api_upcoming_events():
         print(f"[upcoming_events] API error: {e}")
         return jsonify({"error": "Could not fetch upcoming events"}), 500
 
+
 @app.route("/api/health")
 def api_health():
     health_data = state.get("health_stats")
@@ -306,6 +297,17 @@ def api_health():
         return jsonify(health_data)
     else:
         return jsonify(None)
+
+
+@app.route("/api/news")
+def api_news():
+    try:
+        # Get 4-5 news items
+        news_items = get_political_news(limit=5)
+        return jsonify({"news": news_items})
+    except Exception as e:
+        print(f"[news] API error: {e}")
+        return jsonify({"error": "Could not fetch news"}), 500
 
 
 @app.route("/api/refresh", methods=["POST"])

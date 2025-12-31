@@ -6,13 +6,14 @@ LAT, LON = 41.8781, -87.6298
 
 def get_chicago_weekly():
     """
-    Returns a list of 7 days, each with (date, max, min, code, icon, desc, uv_index_max).
+    Returns a list of 7 days, each with (date, max, min, code, icon, desc, uv_index_max, snow_sum).
     """
     url = (
         f"https://api.open-meteo.com/v1/forecast"
         f"?latitude={LAT}&longitude={LON}"
-        "&daily=temperature_2m_max,temperature_2m_min,weathercode,uv_index_max" # Added uv_index_max
+        "&daily=temperature_2m_max,temperature_2m_min,weathercode,uv_index_max,snowfall_sum" # Added snowfall_sum
         "&temperature_unit=fahrenheit"
+        "&precipitation_unit=inch" # Ensure snow comes in inches
         "&timezone=America/Chicago"
     )
     r = requests.get(url, timeout=10) # Increased timeout slightly
@@ -23,6 +24,7 @@ def get_chicago_weekly():
     temps_min = data['daily']['temperature_2m_min']
     codes = data['daily']['weathercode']
     uv_indices_max = data['daily']['uv_index_max'] # Get UV data
+    snow_sums = data['daily']['snowfall_sum'] # Get Snow data
 
     results = []
     # API returns 7 days by default, but good to be safe with min()
@@ -35,6 +37,7 @@ def get_chicago_weekly():
             "icon": weather_icon_for_code(codes[i]),
             "desc": weather_desc_for_code(codes[i]),
             "uv_index_max": uv_indices_max[i] if uv_indices_max[i] is not None else None, # Add UV index
+            "snow_sum": snow_sums[i] if snow_sums[i] is not None else 0.0, # Add Snow sum (inches)
         })
     return results
 
