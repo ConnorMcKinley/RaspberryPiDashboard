@@ -14,6 +14,7 @@ import sys
 try:
     import spidev
     import RPi.GPIO as GPIO
+
     print("[client] RPi.GPIO and spidev loaded.")
 except ImportError:
     print("[client] WARN: RPi.GPIO or spidev not found. Sleep/MOSFET/hardware functions will not work.")
@@ -23,6 +24,7 @@ except ImportError:
 # === PiJuice Import ===
 try:
     from pijuice import PiJuice
+
     # Standard I2C address is 0x14
     pijuice = PiJuice(1, 0x14)
     print("[client] PiJuice loaded.")
@@ -35,13 +37,15 @@ except Exception as e:
 # =============================================================
 
 # === CONFIG ===
-HOST_URL = "http://192.168.50.150:5000/"  # <-- Change this to your host machine's IP
+HOST_URL = "http://192.168.50.150:5000/"
 IMAGE_WIDTH = 1872
 IMAGE_HEIGHT = 1404
 IMAGE_PATH = "/tmp/dashboard.raw"
 
 # === MOSFET Control Configuration ===
 EINK_POWER_PIN = 17  # BCM pin number for MOSFET control (e.g., GPIO17)
+
+
 # ====================================
 
 def get_battery_level():
@@ -55,6 +59,7 @@ def get_battery_level():
         print(f"[client] Error getting battery: {e}")
     return None
 
+
 def report_battery_to_server(level):
     if level is None: return
     try:
@@ -62,6 +67,24 @@ def report_battery_to_server(level):
         requests.post(f"{HOST_URL}api/battery", json={"level": level}, timeout=5)
     except Exception as e:
         print(f"[client] Failed to report battery level: {e}")
+
+
+def check_server_connection(url):
+    """Checks if the server is reachable before launching the heavy browser."""
+    try:
+        print(f"[client] Checking server status at {url}...")
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            print("[client] Server is up and reachable.")
+            return True
+        else:
+            print(f"[client] Server returned status code: {r.status_code}")
+            return False
+    except requests.exceptions.RequestException as e:
+        print(f"[client] Server connection failed: {e}")
+        print("[client] Tip: Check if the server is running and port 5000 is allowed in UFW.")
+        return False
+
 
 def render_site_to_image(url, width, height, out_path):
     print("[client] Setting up Chrome options...")
@@ -81,8 +104,11 @@ def render_site_to_image(url, width, height, out_path):
     service = Service('/usr/bin/chromedriver')
 
     print("[client] Starting WebDriver...")
-    driver = webdriver.Chrome(service=service, options=chrome_options)
     try:
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        # Set a timeout so the driver doesn't hang indefinitely if the network drops mid-load
+        driver.set_page_load_timeout(45)
+
         print(f"[client] Getting URL: {url}")
         driver.get(url)
         # Force a hard reload to bypass cache
@@ -107,7 +133,11 @@ def render_site_to_image(url, width, height, out_path):
         return False
     finally:
         print("[client] Quitting WebDriver.")
-        driver.quit()
+        try:
+            driver.quit()
+        except:
+            pass
+
 
 # === MOSFET Control Functions ===
 def setup_gpio_for_mosfet():
@@ -125,6 +155,7 @@ def setup_gpio_for_mosfet():
         print("[client] WARN: RPi.GPIO library not available. MOSFET control disabled.")
         return False
 
+
 def power_mosfet_on():
     if GPIO and GPIO.getmode() is not None:
         print(f"[client] Turning MOSFET ON (GPIO {EINK_POWER_PIN} -> HIGH)")
@@ -133,6 +164,7 @@ def power_mosfet_on():
     else:
         print("[client] WARN: GPIO not set up, cannot turn MOSFET ON.")
 
+
 def power_mosfet_off():
     if GPIO and GPIO.getmode() is not None:
         print(f"[client] Turning MOSFET OFF (GPIO {EINK_POWER_PIN} -> LOW)")
@@ -140,6 +172,7 @@ def power_mosfet_off():
         print("[client] E-ink display power should be OFF.")
     else:
         print("[client] WARN: GPIO not set up, cannot turn MOSFET OFF.")
+
 
 def main():
     gpio_initialized_successfully = setup_gpio_for_mosfet()
@@ -151,14 +184,20 @@ def main():
             power_mosfet_off()
         sys.exit(0)
 
-    # 1. Get Battery Level & Report to Server
+    # 1. Check Server Connection FIRST
+    # This prevents the heavy browser from launching if the server is blocked/down
+    if not check_server_connection(HOST_URL):
+        print("[client] Aborting render to save power.")
+        sys.exit(1)
+
+    # 2. Get Battery Level & Report to Server
     bat_level = get_battery_level()
     if bat_level is not None:
         report_battery_to_server(bat_level)
     else:
         print("[client] Could not read battery level.")
 
-    # 2. Render site
+    # 3. Render site
     print("[client] Starting rendering process...")
     render_successful = False
     try:
@@ -170,12 +209,13 @@ def main():
     except Exception as e:
         print(f"[client] An unexpected error occurred: {e}")
 
-    # 3. Turn on E-ink
+    # 4. Turn on E-ink
     if gpio_initialized_successfully:
         print("[client] Proceeding to turn on MOSFET for e-ink display.")
         power_mosfet_on()
     else:
         print("[client] GPIO not initialized, unable to turn on MOSFET.")
+
 
 if __name__ == "__main__":
     main()
