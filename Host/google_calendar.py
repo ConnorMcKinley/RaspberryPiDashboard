@@ -10,7 +10,8 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+# CHANGED: Updated scope to allow creating events (removed .readonly)
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 LOCAL_TZ = pytz.timezone("America/Chicago")
 script_dir = os.path.dirname(os.path.abspath(__file__))
 TOKEN_PATH = os.path.join(script_dir, 'calendar_token.pickle')
@@ -28,7 +29,13 @@ def _get_calendar_service():
             print(f"[Calendar] Error loading pickle, will regenerate: {e}")
             creds = None
 
-    # If there are no (valid) credentials available, let the user log in.
+    # Check if creds are valid and have correct scopes
+    if creds and creds.valid:
+        # Check if existing creds have the new scope
+        if not any(s in creds.scopes for s in SCOPES):
+            print("[Calendar] Scopes changed. Forcing re-authentication.")
+            creds = None
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
@@ -43,7 +50,6 @@ def _get_calendar_service():
                 return None
 
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
-            # open_browser=False prevents tabs from spamming the server
             print("[Calendar] Initiating login sequence. If prompted, please visit the URL below.")
             creds = flow.run_local_server(port=8080, open_browser=False)
 
@@ -129,6 +135,53 @@ def get_upcoming_events(start_day_offset=3, num_days=30) -> List[Dict]:
     except Exception as e:
         print(f"[Calendar] Upcoming fetch failed: {e}")
         return []
+
+
+def create_reminder_event(title="Re-auth Robinhood"):
+    """
+    Creates a reminder event at 6 PM Central Time (today or tomorrow).
+    """
+    service = _get_calendar_service()
+    if not service:
+        print("[Calendar] Cannot create reminder: Service unavailable.")
+        return False
+
+    now = datetime.datetime.now(LOCAL_TZ)
+    # Set target to today at 6 PM
+    target_start = now.replace(hour=18, minute=0, second=0, microsecond=0)
+
+    # If it's already past 6 PM, schedule for tomorrow
+    if now > target_start:
+        target_start += datetime.timedelta(days=1)
+
+    target_end = target_start + datetime.timedelta(minutes=30)
+
+    event_body = {
+        'summary': title,
+        'description': 'Robinhood authentication failed or timed out. Please run manual login.',
+        'start': {
+            'dateTime': target_start.isoformat(),
+            'timeZone': 'America/Chicago',
+        },
+        'end': {
+            'dateTime': target_end.isoformat(),
+            'timeZone': 'America/Chicago',
+        },
+        'reminders': {
+            'useDefault': False,
+            'overrides': [
+                {'method': 'popup', 'minutes': 10},
+            ],
+        },
+    }
+
+    try:
+        service.events().insert(calendarId='primary', body=event_body).execute()
+        print(f"[Calendar] Created reminder event for {target_start}")
+        return True
+    except Exception as e:
+        print(f"[Calendar] Failed to create reminder event: {e}")
+        return False
 
 
 if __name__ == '__main__':

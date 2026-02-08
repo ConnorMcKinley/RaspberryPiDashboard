@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>E-Ink Dashboard v19</title>
+    <title>E-Ink Dashboard v20</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/weather-icons/2.0.10/css/weather-icons.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;600;700&display=swap');
@@ -31,9 +31,44 @@
             display: flex;
             flex-direction: column;
             gap: 20px;
-            /* Increased side padding to 5% to push content in */
             padding: 3% 5%;
             background-color: #FFFFFF;
+        }
+
+        /* --- MODE STYLES --- */
+        /* Base Notification Banner (Default Style) */
+        .notification-banner {
+            padding: 8px 15px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 1.2rem;
+            display: none;
+            text-align: center;
+            margin-bottom: -10px;
+        }
+
+        /* Grayscale Mode (Default E-Ink) */
+        body.grayscale-mode .pos-gain,
+        body.grayscale-mode .neg-gain,
+        body.grayscale-mode .neutral-gain {
+            color: #000000 !important;
+        }
+
+        body.grayscale-mode .notification-banner {
+            background-color: #000000;
+            color: #FFFFFF;
+            border: 2px solid #000000;
+        }
+
+        /* Color Mode (Activated via ?mode=color) */
+        body.color-mode .pos-gain { color: #2e7d32; }
+        body.color-mode .neg-gain { color: #c62828; }
+        body.color-mode .neutral-gain { color: #666; }
+
+        body.color-mode .notification-banner {
+            background-color: #ffebee;
+            color: #c62828;
+            border: 1px solid #ef9a9a;
         }
 
         /* --- BATTERY INDICATOR --- */
@@ -176,9 +211,10 @@
         .col-pct { text-align: right; width: 25%; font-family: 'Roboto', monospace; }
         .col-val { text-align: right; width: 35%; font-family: 'Roboto', monospace; font-weight: 600; }
 
-        .pos-gain { color: #2e7d32; }
-        .neg-gain { color: #c62828; }
-        .neutral-gain { color: #666; }
+        /* These will be colored in .color-mode, black in .grayscale-mode */
+        .pos-gain {}
+        .neg-gain {}
+        .neutral-gain {}
 
         /* RIGHT: News & Events Panel */
         .right-info-panel {
@@ -243,14 +279,17 @@
 
     </style>
 </head>
-<body>
+<body class="{{ mode }}-mode">
     <div class="dashboard-container">
         <!-- Battery Indicator -->
         <div class="battery-indicator">
-            <span id="battery-icon-container">
-                <!-- SVG injected via JS -->
-            </span>
+            <span id="battery-icon-container"></span>
             <span id="battery-level">--</span>
+        </div>
+
+        <!-- Warning Banner for Robinhood (Styled differently for E-Ink vs Color) -->
+        <div id="rh-warning" class="notification-banner">
+            ⚠️ Robinhood Auth Required
         </div>
 
         <!-- Week View -->
@@ -316,25 +355,26 @@
 
     function getDayCellClass(dayOffsetFromToday) { return `center-${Math.abs(dayOffsetFromToday)}`; }
 
-    // Battery Icon Generator
+    // Battery Icon Generator (Mode Aware)
     function getBatteryIconSvg(level) {
         if (level === null || level === undefined) return '';
-
-        let fillWidth = 0;
-        let color = '#444'; // Default dark grey
-
-        // Ensure level is 0-100
         const pct = Math.max(0, Math.min(100, level));
+        const fillWidth = (pct / 100) * 26;
 
-        // Map 0-100 to 0-24 (width of inner rect inside 32px SVG roughly)
-        // Main rect width is 26.
-        fillWidth = (pct / 100) * 26;
+        // Detect mode from body class
+        const isColor = document.body.classList.contains('color-mode');
 
-        if (pct < 20) color = '#c62828'; // Red for low battery
+        let color = isColor ? '#444' : '#000'; // Default fill color
+        if (pct < 20) {
+            color = isColor ? '#c62828' : '#000'; // Red if color mode, still black if grayscale
+        }
+
+        const stroke = isColor ? '#666' : '#000';
+        const terminalFill = isColor ? '#888' : '#000';
 
         return `<svg class="battery-icon-svg" viewBox="0 0 36 18">
-            <rect x="1" y="2" width="30" height="14" rx="3" fill="none" stroke="#666" stroke-width="2"/>
-            <rect x="32" y="6" width="3" height="6" rx="1" fill="#888"/>
+            <rect x="1" y="2" width="30" height="14" rx="3" fill="none" stroke="${stroke}" stroke-width="2"/>
+            <rect x="32" y="6" width="3" height="6" rx="1" fill="${terminalFill}"/>
             <rect x="3" y="4" width="${fillWidth}" height="10" rx="1" fill="${color}"/>
         </svg>`;
     }
@@ -416,6 +456,14 @@
                 if (d.error || d.net_worth === null) {
                     if (d.error) document.getElementById('header-total').textContent = "ERROR";
                     return;
+                }
+
+                // Robinhood Warning
+                const rhBanner = document.getElementById('rh-warning');
+                if (d.robinhood_error) {
+                    rhBanner.style.display = 'block';
+                } else {
+                    rhBanner.style.display = 'none';
                 }
 
                 // Battery Update

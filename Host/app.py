@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # app.py - Main Flask app for Raspberry Pi Dashboard
-import os, json, threading, time, argparse, sys
+import os, json, threading, time, argparse, sys, glob
 from datetime import datetime, date, timedelta
 import schedule
 from flask import Flask, jsonify, render_template, request
@@ -9,7 +9,7 @@ from flask import Flask, jsonify, render_template, request
 from fidelity import FidelityAutomation
 from robinhood import get_robinhood_positions
 from weather import get_chicago_weekly
-from google_calendar import get_events_surrounding_days, get_upcoming_events
+from google_calendar import get_events_surrounding_days, get_upcoming_events, create_reminder_event
 from health import get_weekly_health_summary
 from news import get_political_news
 
@@ -47,22 +47,99 @@ def manual_login_flow():
 
 def clean_pickles():
     """Deletes authentication pickle files to force re-login."""
-    files_to_clean = ["calendar_token.pickle", "drive_token.pickle"]
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    print("[Clean] Searching for pickle files to remove...")
 
-    print("[clean] cleaning authentication tokens...")
-    for filename in files_to_clean:
+    # List of files to potentially clean
+    files_to_check = [
+        "calendar_token.pickle",
+        "drive_token.pickle",
+        "robinhood.pickle"
+    ]
+
+    # Also look for any .pickle file in current directory just in case
+    files_to_check.extend(glob.glob("*.pickle"))
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    removed = False
+
+    for filename in files_to_check:
+        # Check relative to script dir
         filepath = os.path.join(script_dir, filename)
         if os.path.exists(filepath):
             try:
                 os.remove(filepath)
-                print(f"[clean] Deleted: {filename}")
+                print(f"[Clean] Removed: {filename}")
+                removed = True
             except Exception as e:
-                print(f"[clean] Error deleting {filename}: {e}")
-        else:
-            print(f"[clean] Not found (skipped): {filename}")
-    print("[clean] Done. Please restart the app to re-authenticate.")
+                print(f"[Clean] Failed to remove {filepath}: {e}")
+        # Also check current working dir if different
+        elif os.path.exists(filename):
+            try:
+                os.remove(filename)
+                print(f"[Clean] Removed: {filename}")
+                removed = True
+            except Exception as e:
+                print(f"[Clean] Failed to remove {filename}: {e}")
+
+    if not removed:
+        print("[Clean] No pickle files found.")
+    else:
+        print("[Clean] Cleanup complete. Please restart the app to re-authenticate.")
     sys.exit(0)
+
+
+# --- ROBINHOOD SAFETY NET ---
+def check_rh_limits():
+    """Returns True if we are allowed to attempt Robinhood auth."""
+    now = datetime.now()
+    timestamps = state.get("rh_timestamps", [])
+
+    # Parse ISO strings back to datetime objects
+    try:
+        dt_timestamps = [datetime.fromisoformat(t) for t in timestamps]
+    except ValueError:
+        dt_timestamps = []
+
+    # Filter: attempts in the last hour
+    last_hour = [t for t in dt_timestamps if (now - t).total_seconds() < 3600]
+    # Filter: attempts in the last 24 hours
+    last_day = [t for t in dt_timestamps if (now - t).total_seconds() < 86400]
+
+    # Clean up state (remove old entries)
+    state["rh_timestamps"] = [t.isoformat() for t in last_day]
+    save_state()
+
+    print(f"[RH Safety] Attempts last hour: {len(last_hour)}/2, last 24h: {len(last_day)}/5")
+
+    if len(last_hour) >= 2:
+        print("[RH Safety] Hourly limit reached. Skipping Robinhood.")
+        return False
+    if len(last_day) >= 5:
+        print("[RH Safety] Daily limit reached. Skipping Robinhood.")
+        return False
+
+    return True
+
+
+def record_rh_attempt():
+    """Records a new Robinhood authentication attempt."""
+    if "rh_timestamps" not in state:
+        state["rh_timestamps"] = []
+    state["rh_timestamps"].append(datetime.now().isoformat())
+    save_state()
+
+
+def trigger_rh_reminder_if_needed():
+    """Creates a calendar event if we haven't created one recently."""
+    last_reminded = state.get("rh_last_reminder_date")
+    today_str = date.today().isoformat()
+
+    if last_reminded != today_str:
+        print("[RH Safety] Triggering Calendar Reminder for Re-auth...")
+        success = create_reminder_event("Fix Robinhood Auth")
+        if success:
+            state["rh_last_reminder_date"] = today_str
+            save_state()
 
 
 def fetch_net_worth():
@@ -71,47 +148,68 @@ def fetch_net_worth():
         cfg = config.get("fidelity", {})
         rh_cfg = config.get("robinhood", {})
 
+        fidelity_data = {}
         if not cfg:
             print("[fetch] Skipping Fidelity (no config)")
-            fidelity_data = {}
         else:
             # 1. Fidelity
-            bot = FidelityAutomation(headless=True, debug=False, save_state=True)
-            need_pw, need_2fa = bot.login(cfg["username"], cfg["password"], save_device=True,
-                                          totp_secret=cfg.get("totp_secret"))
-            if not need_pw and not need_2fa:
-                print("Password error")
-                raise Exception("Fidelity password error")
-            if not need_2fa:
-                code = input("Enter 2-factor code: ")
-                bot.login_2FA(code)
+            try:
+                bot = FidelityAutomation(headless=True, debug=False, save_state=True)
+                need_pw, need_2fa = bot.login(cfg["username"], cfg["password"], save_device=True,
+                                              totp_secret=cfg.get("totp_secret"))
+                if not need_pw and not need_2fa:
+                    raise Exception("Fidelity password error")
+                if not need_2fa:
+                    # In headless mode we can't input code, so this usually fails if logic triggers
+                    print("[fetch] Fidelity requesting manual 2FA in headless mode - skipping.")
+                else:
+                    fidelity_data = bot.get_detailed_portfolio()
+                bot.close_browser()
+            except Exception as e:
+                print(f"[fetch] Fidelity Error: {e}")
+                pass
 
-            # Get detailed portfolio structure
-            fidelity_data = bot.get_detailed_portfolio()
-            bot.close_browser()
-
-            if not fidelity_data or fidelity_data.get('total_net_worth') == 0:
-                print("Warning: Fidelity data seems empty")
-
-        # 2. Robinhood
+        # 2. Robinhood (With Safety Net)
         rh_data = None
+        rh_positions = []
+
+        should_attempt_rh = False
         if rh_cfg and rh_cfg.get("username"):
-            rh_data = get_robinhood_positions(
-                rh_cfg["username"], rh_cfg["password"], rh_cfg["totp_secret"]
-            )
+            should_attempt_rh = True
+
+        if should_attempt_rh and check_rh_limits():
+            print("[fetch] Attempting Robinhood login...")
+            record_rh_attempt()
+            try:
+                rh_data = get_robinhood_positions(
+                    rh_cfg["username"], rh_cfg["password"], rh_cfg["totp_secret"]
+                )
+                if rh_data:
+                    rh_positions = rh_data.get("positions", [])
+                    print(f"[fetch] Robinhood: {rh_data.get('equity'):,.2f} added")
+                    state["robinhood_error"] = False
+                else:
+                    print("[fetch] Robinhood returned no data.")
+            except Exception as e:
+                print(f"[fetch] Robinhood Failed: {e}")
+                state["robinhood_error"] = True
+                trigger_rh_reminder_if_needed()
+        elif should_attempt_rh:
+            print("[fetch] Robinhood skipped due to rate limits.")
+            if state.get("robinhood_error") is None:
+                state["robinhood_error"] = True
 
         # Combine Totals
         total_nw = fidelity_data.get('total_net_worth', 0.0)
         if rh_data:
             total_nw += rh_data.get('equity', 0.0)
-            print(f"[fetch] Robinhood: {rh_data.get('equity'):,.2f} added")
 
         # Build Portfolio Details Object for State
         portfolio_details = {
             "total_value": total_nw,
             "fidelity": fidelity_data.get("fidelity_accounts", []),
             "non_fidelity": fidelity_data.get("non_fidelity_accounts", []),
-            "robinhood": rh_data.get("positions", []) if rh_data else []
+            "robinhood": rh_positions
         }
 
         # Update State logic (History etc)
@@ -122,13 +220,12 @@ def fetch_net_worth():
             if net_worth_from_last_run is not None:
                 state["yesterday"] = net_worth_from_last_run
             else:
-                # Fallback if no yesterday, just use current
                 state["yesterday"] = total_nw
         elif state.get("yesterday") is None:
             state["yesterday"] = total_nw
 
         state["net_worth"] = total_nw
-        state["portfolio_details"] = portfolio_details  # Save detailed structure
+        state["portfolio_details"] = portfolio_details
         state["last_updated"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")
         state["error"] = False
         state["stamp"] = today_iso
@@ -141,7 +238,6 @@ def fetch_net_worth():
 
     except Exception as e:
         print(f"Fetch error: {e}")
-        # traceback.print_exc() # Optional: import traceback if needed
         state["error"] = True
         state["last_updated"] = datetime.now().strftime("%Y-%m-%d %I:%M %p")
         save_state()
@@ -195,7 +291,10 @@ default_state = dict(
     weather_stamp=None,
     health_stats=None,
     portfolio_details=None,
-    battery=None  # Added battery to state
+    battery=None,
+    rh_timestamps=[],
+    rh_last_reminder_date=None,
+    robinhood_error=False
 )
 state = default_state.copy()
 
@@ -234,7 +333,6 @@ def periodic_update():
 
 
 print("[startup] Performing initial data fetch...")
-# Uncommented to ensure data is preloaded on server start
 periodic_update()
 
 reschedule()
@@ -253,7 +351,9 @@ app = Flask(__name__, static_url_path="/static")
 
 @app.route("/")
 def home():
-    return render_template("dashboard.html")
+    # Pass 'mode' query param to template. Default is 'grayscale' for E-Ink.
+    mode = request.args.get('mode', 'grayscale')
+    return render_template("dashboard.html", mode=mode)
 
 
 @app.route("/api/data")
@@ -272,14 +372,14 @@ def api_data():
         change=delta_to_show,
         last_updated=state.get("last_updated"),
         error=state.get("error", False),
+        robinhood_error=state.get("robinhood_error", False),
         details=state.get("portfolio_details"),
-        battery=state.get("battery")  # Return battery in API
+        battery=state.get("battery")
     )
 
 
 @app.route("/api/battery", methods=["POST"])
 def api_battery():
-    """Receives battery level from the client."""
     data = request.json
     if not data or "level" not in data:
         return jsonify({"error": "Missing 'level' in payload"}), 400
@@ -287,8 +387,6 @@ def api_battery():
     try:
         level = int(data["level"])
         state["battery"] = level
-        # We don't save_state() here to avoid thrashing the disk too much,
-        # but you could if you want persistence across server restarts.
         print(f"[battery] Updated battery level to {level}%")
         return jsonify({"status": "ok", "level": level})
     except ValueError:
@@ -336,7 +434,6 @@ def api_calendar():
 @app.route("/api/upcoming_events")
 def api_upcoming_events():
     try:
-        # Fetch events starting from 3 days from now, for the next 30 days.
         events = get_upcoming_events(start_day_offset=3, num_days=30)
         return jsonify({"events": events})
     except Exception as e:
