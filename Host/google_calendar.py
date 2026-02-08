@@ -2,6 +2,8 @@
 from __future__ import print_function
 import datetime
 import os.path
+import time
+import threading
 from typing import List, Dict
 import pytz
 import pickle
@@ -10,28 +12,34 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
-# CHANGED: Updated scope to allow creating events (removed .readonly)
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 LOCAL_TZ = pytz.timezone("America/Chicago")
 script_dir = os.path.dirname(os.path.abspath(__file__))
 TOKEN_PATH = os.path.join(script_dir, 'calendar_token.pickle')
 CREDENTIALS_PATH = os.path.join(script_dir, 'google_credentials.json')
 
+# GLOBAL LOCK & COOLDOWN
+# Prevents multiple threads (e.g. api/calendar + api/upcoming) from trying
+# to open port 8080 simultaneously, which causes Errno 98.
+_auth_lock = threading.Lock()
+_last_auth_attempt_time = 0
+AUTH_COOLDOWN_SECONDS = 300  # Don't try to auth more than once every 5 minutes
+
 
 def _get_calendar_service():
     """Helper function to authenticate and return a Google Calendar service object."""
+    global _last_auth_attempt_time
+
     creds = None
     if os.path.exists(TOKEN_PATH):
         try:
             with open(TOKEN_PATH, 'rb') as token:
                 creds = pickle.load(token)
         except Exception as e:
-            print(f"[Calendar] Error loading pickle, will regenerate: {e}")
+            print(f"[Calendar] Error loading pickle: {e}")
             creds = None
 
-    # Check if creds are valid and have correct scopes
     if creds and creds.valid:
-        # Check if existing creds have the new scope
         if not any(s in creds.scopes for s in SCOPES):
             print("[Calendar] Scopes changed. Forcing re-authentication.")
             creds = None
@@ -42,19 +50,45 @@ def _get_calendar_service():
                 creds.refresh(Request())
             except Exception as e:
                 print(f"[Calendar] Token refresh failed: {e}")
-                creds = None  # Force re-auth
+                creds = None
 
         if not creds or not creds.valid:
-            if not os.path.exists(CREDENTIALS_PATH):
-                print("[Calendar] ERROR: google_credentials.json not found.")
+            # --- AUTHENTICATION FLOW START ---
+
+            # 1. Check Cooldown
+            if time.time() - _last_auth_attempt_time < AUTH_COOLDOWN_SECONDS:
+                print("[Calendar] Auth required but cooldown active. Skipping to prevent log spam.")
                 return None
 
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
-            print("[Calendar] Initiating login sequence. If prompted, please visit the URL below.")
-            creds = flow.run_local_server(port=8080, open_browser=False)
+            # 2. Acquire Lock (Non-blocking)
+            if _auth_lock.acquire(blocking=False):
+                try:
+                    _last_auth_attempt_time = time.time()
 
-        with open(TOKEN_PATH, 'wb') as token:
-            pickle.dump(creds, token)
+                    if not os.path.exists(CREDENTIALS_PATH):
+                        print("[Calendar] ERROR: google_credentials.json not found.")
+                        return None
+
+                    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
+                    print("[Calendar] Initiating login sequence (Port 8080)...")
+
+                    try:
+                        creds = flow.run_local_server(port=8080, open_browser=False)
+                        with open(TOKEN_PATH, 'wb') as token:
+                            pickle.dump(creds, token)
+                    except Exception as e:
+                        print(f"[Calendar] Auth Server Error (Port 8080 busy?): {e}")
+                        return None
+
+                except Exception as e:
+                    print(f"[Calendar] Authentication failed: {e}")
+                    return None
+                finally:
+                    _auth_lock.release()
+            else:
+                print("[Calendar] Auth already in progress in another thread.")
+                return None
+            # --- AUTHENTICATION FLOW END ---
 
     return build('calendar', 'v3', credentials=creds)
 
@@ -64,7 +98,6 @@ def _format_event_list(events: List[Dict]) -> List[Dict]:
     event_list = []
     for event in events:
         if 'dateTime' in event['start']:
-            # Timed event
             event_dt = datetime.datetime.fromisoformat(event['start']['dateTime'])
             if event_dt.tzinfo is None:
                 event_dt = LOCAL_TZ.localize(event_dt)
@@ -73,7 +106,6 @@ def _format_event_list(events: List[Dict]) -> List[Dict]:
             event_date = event_dt.strftime('%Y-%m-%d')
             event_time = event_dt.strftime('%H:%M')
         else:
-            # All-day event
             event_date = event['start']['date']
             event_time = ''
         title = event.get('summary', '(No title)')
@@ -82,9 +114,6 @@ def _format_event_list(events: List[Dict]) -> List[Dict]:
 
 
 def get_events_surrounding_days(num_days=2) -> List[Dict]:
-    """
-    Returns calendar events for today ±num_days (default: 2).
-    """
     service = _get_calendar_service()
     if not service: return []
 
@@ -108,9 +137,6 @@ def get_events_surrounding_days(num_days=2) -> List[Dict]:
 
 
 def get_upcoming_events(start_day_offset=3, num_days=30) -> List[Dict]:
-    """
-    Returns calendar events for a future range, starting from an offset.
-    """
     service = _get_calendar_service()
     if not service: return []
 
@@ -138,19 +164,13 @@ def get_upcoming_events(start_day_offset=3, num_days=30) -> List[Dict]:
 
 
 def create_reminder_event(title="Re-auth Robinhood"):
-    """
-    Creates a reminder event at 6 PM Central Time (today or tomorrow).
-    """
     service = _get_calendar_service()
     if not service:
         print("[Calendar] Cannot create reminder: Service unavailable.")
         return False
 
     now = datetime.datetime.now(LOCAL_TZ)
-    # Set target to today at 6 PM
     target_start = now.replace(hour=18, minute=0, second=0, microsecond=0)
-
-    # If it's already past 6 PM, schedule for tomorrow
     if now > target_start:
         target_start += datetime.timedelta(days=1)
 
@@ -169,9 +189,7 @@ def create_reminder_event(title="Re-auth Robinhood"):
         },
         'reminders': {
             'useDefault': False,
-            'overrides': [
-                {'method': 'popup', 'minutes': 10},
-            ],
+            'overrides': [{'method': 'popup', 'minutes': 10}],
         },
     }
 

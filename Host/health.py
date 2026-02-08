@@ -3,6 +3,8 @@ import os
 import json
 import pickle
 import io
+import time
+import threading
 from collections import defaultdict
 from typing import List, Dict, Any
 
@@ -12,14 +14,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
 # --- CONFIGURATION ---
-
-# The ID of the Google Drive folder containing your health exports.
 TARGET_FOLDER_ID = "1uBEwWRgd4KHCs_YKa-isVGaLzUa3bFr1"
-
-# The scopes required for the Google Drive API.
 SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-
-# Define the metrics to track. The keys must match the 'name' in the JSON file.
 METRICS_TO_PROCESS = {
     'apple_exercise_time': {'name': 'Exercise', 'unit': 'min'},
     'resting_heart_rate': {'name': 'Resting HR', 'unit': 'bpm'},
@@ -31,16 +27,21 @@ METRICS_TO_PROCESS = {
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 HEALTH_HISTORY_FILE = os.path.join(_SCRIPT_DIR, 'health_data.json')
 TOKEN_PATH = os.path.join(_SCRIPT_DIR, 'drive_token.pickle')
-# Assumes you have one of these credentials files in the same directory.
 DRIVE_CREDENTIALS_PATH = os.path.join(_SCRIPT_DIR, 'drive_credentials.json')
 CALENDAR_CREDENTIALS_PATH = os.path.join(_SCRIPT_DIR, 'google_credentials.json')
 
 # --- CONSTANTS ---
 HISTORY_DAYS_TO_KEEP = 14
 
+# GLOBAL LOCK & COOLDOWN for Health Auth
+_health_auth_lock = threading.Lock()
+_last_health_auth_time = 0
+AUTH_COOLDOWN_SECONDS = 300  # 5 minutes
+
 
 def _get_drive_service():
     """Authenticates with Google and returns a Drive API service object."""
+    global _last_health_auth_time
     creds = None
     if os.path.exists(TOKEN_PATH):
         try:
@@ -53,27 +54,48 @@ def _get_drive_service():
     if not creds or not creds.valid or not all(s in creds.scopes for s in SCOPES):
         if creds and creds.expired and creds.refresh_token:
             try:
-                # Refresh scopes if needed
                 creds.scopes = list(set(SCOPES + creds.scopes))
                 creds.refresh(Request())
             except Exception as e:
                 print(f"[Health] Token refresh failed: {e}")
-                creds = None  # Force re-auth
+                creds = None
 
         if not creds or not creds.valid:
-            credentials_file = DRIVE_CREDENTIALS_PATH if os.path.exists(
-                DRIVE_CREDENTIALS_PATH) else CALENDAR_CREDENTIALS_PATH
-            if not os.path.exists(credentials_file):
-                print(f"[Health] ERROR: Credentials file not found.")
+            # --- AUTHENTICATION FLOW START ---
+            if time.time() - _last_health_auth_time < AUTH_COOLDOWN_SECONDS:
+                print("[Health] Auth required but cooldown active. Skipping.")
                 return None
 
-            flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
-            # open_browser=False prevents spamming tabs on the server
-            print("[Health] Initiating login sequence. Please visit the URL below if prompted.")
-            creds = flow.run_local_server(port=8080, open_browser=False)
+            if _health_auth_lock.acquire(blocking=False):
+                try:
+                    _last_health_auth_time = time.time()
+                    credentials_file = DRIVE_CREDENTIALS_PATH if os.path.exists(
+                        DRIVE_CREDENTIALS_PATH) else CALENDAR_CREDENTIALS_PATH
 
-        with open(TOKEN_PATH, 'wb') as token:
-            pickle.dump(creds, token)
+                    if not os.path.exists(credentials_file):
+                        print(f"[Health] ERROR: Credentials file not found.")
+                        return None
+
+                    flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
+                    print("[Health] Initiating login sequence (Port 8080)...")
+
+                    try:
+                        creds = flow.run_local_server(port=8080, open_browser=False)
+                        with open(TOKEN_PATH, 'wb') as token:
+                            pickle.dump(creds, token)
+                    except Exception as e:
+                        print(f"[Health] Auth Server Error (Port 8080 busy?): {e}")
+                        return None
+
+                except Exception as e:
+                    print(f"[Health] Auth failed: {e}")
+                    return None
+                finally:
+                    _health_auth_lock.release()
+            else:
+                print("[Health] Auth already in progress in another thread.")
+                return None
+            # --- AUTHENTICATION FLOW END ---
 
     return build('drive', 'v3', credentials=creds)
 
@@ -93,7 +115,8 @@ def _find_and_download_latest_file(service: Any) -> str:
 
         files = response.get('files', [])
         if not files:
-            raise FileNotFoundError(f"No 'HealthAutoExport-*' files found in the specified Google Drive folder.")
+            # Silent fail is better than crash for dashboard
+            return None
 
         file_id = files[0]['id']
         request = service.files().get_media(fileId=file_id)
@@ -162,7 +185,6 @@ def _update_and_save_history(new_data: Dict[str, Dict[str, float]]) -> List[Dict
 
     history_dict = {item['date']: item['metrics'] for item in history}
 
-    # Merge new data correctly
     for date, metrics in new_data.items():
         history_dict[date] = metrics
 
@@ -171,7 +193,6 @@ def _update_and_save_history(new_data: Dict[str, Dict[str, float]]) -> List[Dict
         for date, metrics in history_dict.items()
     ]
 
-    # Sort by date (most recent first) and limit to desired length
     updated_history.sort(key=lambda x: x['date'], reverse=True)
     updated_history = updated_history[:HISTORY_DAYS_TO_KEEP]
 
@@ -182,9 +203,6 @@ def _update_and_save_history(new_data: Dict[str, Dict[str, float]]) -> List[Dict
 
 
 def _calculate_weekly_summary(history: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """
-    Calculates 7-day averages and the change from the previous 7 days.
-    """
     today = datetime.date.today()
     summary = {}
 
@@ -205,16 +223,14 @@ def _calculate_weekly_summary(history: List[Dict[str, Any]]) -> Dict[str, Dict[s
             except (KeyError, ValueError):
                 continue
 
-        # Calculate averages. If no data, average is 0.
         current_avg = sum(current_week_values) / len(current_week_values) if current_week_values else 0.0
         last_avg = sum(last_week_values) / len(last_week_values) if last_week_values else 0.0
 
-        # Calculate percentage change, handling division by zero.
         change_pct = 0.0
         if last_avg > 0:
             change_pct = ((current_avg - last_avg) / last_avg) * 100.0
         elif current_avg > 0:
-            change_pct = 100.0  # From 0 to a positive number is a 100% increase.
+            change_pct = 100.0
 
         summary[metric_key] = {
             "name": config['name'],
@@ -226,12 +242,10 @@ def _calculate_weekly_summary(history: List[Dict[str, Any]]) -> Dict[str, Dict[s
 
 
 def get_weekly_health_summary() -> Dict[str, Dict[str, Any]]:
-    """
-    The main public function to orchestrate the entire health data update process.
-    """
     service = _get_drive_service()
+
+    # If service unavailable, try to serve from history cache
     if not service:
-        # If service setup failed, return existing history
         history = []
         if os.path.exists(HEALTH_HISTORY_FILE):
             try:
@@ -245,7 +259,6 @@ def get_weekly_health_summary() -> Dict[str, Dict[str, Any]]:
     newly_parsed_data = _parse_health_data(json_content)
 
     if not newly_parsed_data:
-        # If parsing fails or yields no data, load old history and calculate from that.
         history = []
         if os.path.exists(HEALTH_HISTORY_FILE):
             try:

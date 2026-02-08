@@ -1,17 +1,21 @@
 # robinhood.py
 import robin_stocks.robinhood as r
 import pyotp
+import requests
 
 
 def get_robinhood_positions(username, password, totp_secret):
     """
     Returns a dict with 'equity' and 'positions' list.
-    Positions: [{'symbol': 'AAPL', 'value': 150.00, 'pct_gain': 5.4, 'quantity': 1}]
     """
     try:
         totp = pyotp.TOTP(totp_secret).now()
+        # Robinhood login call.
         login = r.login(username, password, expiresIn=2592000, mfa_code=totp)
-        if 'access_token' not in login:
+
+        # Check if login dict is valid or if it failed completely
+        if not login or 'access_token' not in login:
+            print("[Robinhood] Login returned invalid response (possibly 2FA failed).")
             return None
 
         # Get total equity
@@ -19,8 +23,6 @@ def get_robinhood_positions(username, password, totp_secret):
         equity = float(profile['equity']) if profile else 0.0
 
         # Get holdings
-        # build_holdings returns a dict keyed by symbol
-        # { 'AAPL': {'price': '...', 'quantity': '...', 'average_buy_price': '...', 'equity': '...', ...} }
         holdings_raw = r.build_holdings()
 
         positions = []
@@ -31,8 +33,6 @@ def get_robinhood_positions(username, password, totp_secret):
                 buy_price = float(data.get('average_buy_price', 0))
                 price = float(data.get('price', 0))
 
-                # Calculate Gain %
-                # (Current Price - Avg Buy) / Avg Buy
                 if buy_price > 0:
                     pct_gain = ((price - buy_price) / buy_price) * 100
                 else:
@@ -45,9 +45,8 @@ def get_robinhood_positions(username, password, totp_secret):
                     "quantity": qty
                 })
             except Exception as e:
-                print(f"Error parsing RH stock {sym}: {e}")
+                print(f"[Robinhood] Error parsing stock {sym}: {e}")
 
-        # Sort by value
         positions.sort(key=lambda x: x['value'], reverse=True)
 
         return {
@@ -56,11 +55,14 @@ def get_robinhood_positions(username, password, totp_secret):
         }
 
     except Exception as e:
-        print(f"Robinhood error: {e}")
-        return None
+        # Re-raise the exception so app.py can see the 429 details
+        raise e
 
 
 def get_robinhood_balance(username, password, totp_secret):
     # Backward compatibility wrapper
-    data = get_robinhood_positions(username, password, totp_secret)
-    return data['equity'] if data else None
+    try:
+        data = get_robinhood_positions(username, password, totp_secret)
+        return data['equity'] if data else None
+    except:
+        return None

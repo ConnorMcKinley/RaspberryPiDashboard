@@ -31,7 +31,7 @@ def save_state():
 
 
 def manual_login_flow():
-    print("Launching browser for manual login. Please log in and complete any 2FA if required.")
+    print("Launching browser for manual FIDELITY login...")
     cfg = config.get("fidelity", {})
     if not cfg:
         print("Error: Fidelity config missing.")
@@ -41,7 +41,31 @@ def manual_login_flow():
     input("After logging in and seeing your account summary, press Enter here to save session and exit...")
     bot.save_storage_state()
     bot.close_browser()
-    print("Login session saved. Future runs will use this session and avoid 2FA where possible.")
+    print("Fidelity session saved.")
+    sys.exit(0)
+
+
+def setup_robinhood_flow():
+    print("\n--- ROBINHOOD INTERACTIVE SETUP ---")
+    print("This will log in once to generate a valid session file (pickle).")
+    print("Please have your phone ready for the SMS code.\n")
+
+    cfg = config.get("robinhood", {})
+    if not cfg or not cfg.get("username"):
+        print("Error: Robinhood config missing in config.json")
+        return
+
+    # Force a login attempt
+    try:
+        data = get_robinhood_positions(cfg["username"], cfg["password"], cfg["totp_secret"])
+        if data:
+            print("\nSUCCESS: Robinhood login successful. Session saved.")
+            print(f"Current Equity: ${data.get('equity', 0)}")
+        else:
+            print("\nFAILURE: Login returned no data.")
+    except Exception as e:
+        print(f"\nERROR: {e}")
+
     sys.exit(0)
 
 
@@ -49,21 +73,17 @@ def clean_pickles():
     """Deletes authentication pickle files to force re-login."""
     print("[Clean] Searching for pickle files to remove...")
 
-    # List of files to potentially clean
     files_to_check = [
         "calendar_token.pickle",
         "drive_token.pickle",
         "robinhood.pickle"
     ]
-
-    # Also look for any .pickle file in current directory just in case
     files_to_check.extend(glob.glob("*.pickle"))
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     removed = False
 
     for filename in files_to_check:
-        # Check relative to script dir
         filepath = os.path.join(script_dir, filename)
         if os.path.exists(filepath):
             try:
@@ -72,7 +92,6 @@ def clean_pickles():
                 removed = True
             except Exception as e:
                 print(f"[Clean] Failed to remove {filepath}: {e}")
-        # Also check current working dir if different
         elif os.path.exists(filename):
             try:
                 os.remove(filename)
@@ -84,7 +103,7 @@ def clean_pickles():
     if not removed:
         print("[Clean] No pickle files found.")
     else:
-        print("[Clean] Cleanup complete. Please restart the app to re-authenticate.")
+        print("[Clean] Cleanup complete. Please run --setup-robinhood to re-auth.")
     sys.exit(0)
 
 
@@ -92,30 +111,41 @@ def clean_pickles():
 def check_rh_limits():
     """Returns True if we are allowed to attempt Robinhood auth."""
     now = datetime.now()
-    timestamps = state.get("rh_timestamps", [])
 
-    # Parse ISO strings back to datetime objects
+    # 1. Check for Hard Lockout (caused by 429s)
+    lockout_str = state.get("rh_lockout_until")
+    if lockout_str:
+        try:
+            lockout_dt = datetime.fromisoformat(lockout_str)
+            if now < lockout_dt:
+                remaining = int((lockout_dt - now).total_seconds() / 60)
+                print(f"[RH Safety] LOCKED OUT due to previous 429 errors. Resuming in {remaining} mins.")
+                return False
+            else:
+                # Lockout expired, clear it
+                print("[RH Safety] Lockout expired. Resuming attempts.")
+                state["rh_lockout_until"] = None
+        except ValueError:
+            state["rh_lockout_until"] = None
+
+    # 2. Check Frequency Limits
+    timestamps = state.get("rh_timestamps", [])
     try:
         dt_timestamps = [datetime.fromisoformat(t) for t in timestamps]
     except ValueError:
         dt_timestamps = []
 
-    # Filter: attempts in the last hour
     last_hour = [t for t in dt_timestamps if (now - t).total_seconds() < 3600]
-    # Filter: attempts in the last 24 hours
     last_day = [t for t in dt_timestamps if (now - t).total_seconds() < 86400]
 
-    # Clean up state (remove old entries)
     state["rh_timestamps"] = [t.isoformat() for t in last_day]
     save_state()
 
-    print(f"[RH Safety] Attempts last hour: {len(last_hour)}/2, last 24h: {len(last_day)}/5")
-
     if len(last_hour) >= 2:
-        print("[RH Safety] Hourly limit reached. Skipping Robinhood.")
+        print(f"[RH Safety] Hourly limit reached ({len(last_hour)}/2). Skipping.")
         return False
-    if len(last_day) >= 5:
-        print("[RH Safety] Daily limit reached. Skipping Robinhood.")
+    if len(last_day) >= 10:  # Increased daily slightly, but hourly is strict
+        print(f"[RH Safety] Daily limit reached ({len(last_day)}/10). Skipping.")
         return False
 
     return True
@@ -129,17 +159,14 @@ def record_rh_attempt():
     save_state()
 
 
-def trigger_rh_reminder_if_needed():
-    """Creates a calendar event if we haven't created one recently."""
-    last_reminded = state.get("rh_last_reminder_date")
-    today_str = date.today().isoformat()
-
-    if last_reminded != today_str:
-        print("[RH Safety] Triggering Calendar Reminder for Re-auth...")
-        success = create_reminder_event("Fix Robinhood Auth")
-        if success:
-            state["rh_last_reminder_date"] = today_str
-            save_state()
+def activate_rh_lockout():
+    """Locks Robinhood attempts for 24 hours."""
+    lock_until = datetime.now() + timedelta(hours=24)
+    state["rh_lockout_until"] = lock_until.isoformat()
+    state["robinhood_error"] = True
+    save_state()
+    print(f"[RH Safety] ⛔ CRITICAL: 429 Rate Limit detected. Locking Robinhood for 24 hours (until {lock_until}).")
+    create_reminder_event("RH Rate Limited (24h)")
 
 
 def fetch_net_worth():
@@ -152,7 +179,6 @@ def fetch_net_worth():
         if not cfg:
             print("[fetch] Skipping Fidelity (no config)")
         else:
-            # 1. Fidelity
             try:
                 bot = FidelityAutomation(headless=True, debug=False, save_state=True)
                 need_pw, need_2fa = bot.login(cfg["username"], cfg["password"], save_device=True,
@@ -160,7 +186,6 @@ def fetch_net_worth():
                 if not need_pw and not need_2fa:
                     raise Exception("Fidelity password error")
                 if not need_2fa:
-                    # In headless mode we can't input code, so this usually fails if logic triggers
                     print("[fetch] Fidelity requesting manual 2FA in headless mode - skipping.")
                 else:
                     fidelity_data = bot.get_detailed_portfolio()
@@ -169,7 +194,7 @@ def fetch_net_worth():
                 print(f"[fetch] Fidelity Error: {e}")
                 pass
 
-        # 2. Robinhood (With Safety Net)
+        # 2. Robinhood (With Strict Safety Net)
         rh_data = None
         rh_positions = []
 
@@ -190,12 +215,21 @@ def fetch_net_worth():
                     state["robinhood_error"] = False
                 else:
                     print("[fetch] Robinhood returned no data.")
+                    state["robinhood_error"] = True
+
             except Exception as e:
-                print(f"[fetch] Robinhood Failed: {e}")
-                state["robinhood_error"] = True
-                trigger_rh_reminder_if_needed()
+                err_str = str(e)
+                print(f"[fetch] Robinhood Failed: {err_str}")
+
+                # Check for 429 in the exception message or type
+                if "429" in err_str or "Too Many Requests" in err_str:
+                    activate_rh_lockout()
+                else:
+                    state["robinhood_error"] = True
+
         elif should_attempt_rh:
-            print("[fetch] Robinhood skipped due to rate limits.")
+            print("[fetch] Robinhood skipped due to limits/lockout.")
+            # Keep error visible
             if state.get("robinhood_error") is None:
                 state["robinhood_error"] = True
 
@@ -204,7 +238,6 @@ def fetch_net_worth():
         if rh_data:
             total_nw += rh_data.get('equity', 0.0)
 
-        # Build Portfolio Details Object for State
         portfolio_details = {
             "total_value": total_nw,
             "fidelity": fidelity_data.get("fidelity_accounts", []),
@@ -212,7 +245,6 @@ def fetch_net_worth():
             "robinhood": rh_positions
         }
 
-        # Update State logic (History etc)
         today_iso = date.today().isoformat()
         net_worth_from_last_run = state.get("net_worth")
 
@@ -293,6 +325,7 @@ default_state = dict(
     portfolio_details=None,
     battery=None,
     rh_timestamps=[],
+    rh_lockout_until=None,
     rh_last_reminder_date=None,
     robinhood_error=False
 )
@@ -310,7 +343,9 @@ if os.path.exists(STATE):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Pi Dashboard App")
-    parser.add_argument('--manual-login', action='store_true', help="Run browser for manual login and save session")
+    parser.add_argument('--manual-login', action='store_true', help="Run browser for Fidelity manual login")
+    parser.add_argument('--setup-robinhood', action='store_true',
+                        help="Run interactive Robinhood login to fix 2FA/Pickle errors")
     parser.add_argument('--clean', action='store_true', help="Delete authentication pickle files to fix token errors")
     return parser.parse_args()
 
@@ -322,6 +357,9 @@ if args.clean:
 
 if args.manual_login:
     manual_login_flow()
+
+if args.setup_robinhood:
+    setup_robinhood_flow()
 
 
 def periodic_update():
@@ -351,7 +389,6 @@ app = Flask(__name__, static_url_path="/static")
 
 @app.route("/")
 def home():
-    # Pass 'mode' query param to template. Default is 'grayscale' for E-Ink.
     mode = request.args.get('mode', 'grayscale')
     return render_template("dashboard.html", mode=mode)
 
