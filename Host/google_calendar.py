@@ -21,15 +21,32 @@ def _get_calendar_service():
     """Helper function to authenticate and return a Google Calendar service object."""
     creds = None
     if os.path.exists(TOKEN_PATH):
-        with open(TOKEN_PATH, 'rb') as token:
-            creds = pickle.load(token)
+        try:
+            with open(TOKEN_PATH, 'rb') as token:
+                creds = pickle.load(token)
+        except Exception as e:
+            print(f"[Calendar] Error loading pickle, will regenerate: {e}")
+            creds = None
 
+    # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"[Calendar] Token refresh failed: {e}")
+                creds = None  # Force re-auth
+
+        if not creds or not creds.valid:
+            if not os.path.exists(CREDENTIALS_PATH):
+                print("[Calendar] ERROR: google_credentials.json not found.")
+                return None
+
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
-            creds = flow.run_local_server(port=8080)
+            # open_browser=False prevents tabs from spamming the server
+            print("[Calendar] Initiating login sequence. If prompted, please visit the URL below.")
+            creds = flow.run_local_server(port=8080, open_browser=False)
+
         with open(TOKEN_PATH, 'wb') as token:
             pickle.dump(creds, token)
 
@@ -63,6 +80,7 @@ def get_events_surrounding_days(num_days=2) -> List[Dict]:
     Returns calendar events for today ±num_days (default: 2).
     """
     service = _get_calendar_service()
+    if not service: return []
 
     today = datetime.datetime.now(LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
     start = today - datetime.timedelta(days=num_days)
@@ -71,21 +89,24 @@ def get_events_surrounding_days(num_days=2) -> List[Dict]:
     timeMin = start.isoformat()
     timeMax = end.isoformat()
 
-    events_result = service.events().list(
-        calendarId='primary', timeMin=timeMin, timeMax=timeMax,
-        singleEvents=True, orderBy='startTime'
-    ).execute()
-    events = events_result.get('items', [])
-
-    return _format_event_list(events)
+    try:
+        events_result = service.events().list(
+            calendarId='primary', timeMin=timeMin, timeMax=timeMax,
+            singleEvents=True, orderBy='startTime'
+        ).execute()
+        events = events_result.get('items', [])
+        return _format_event_list(events)
+    except Exception as e:
+        print(f"[Calendar] Fetch failed: {e}")
+        return []
 
 
 def get_upcoming_events(start_day_offset=3, num_days=30) -> List[Dict]:
     """
     Returns calendar events for a future range, starting from an offset.
-    Useful for fetching events beyond the immediate weekly view.
     """
     service = _get_calendar_service()
+    if not service: return []
 
     today_start_of_day = datetime.datetime.now(LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -95,16 +116,19 @@ def get_upcoming_events(start_day_offset=3, num_days=30) -> List[Dict]:
     timeMin = start_date.isoformat()
     timeMax = end_date.isoformat()
 
-    events_result = service.events().list(
-        calendarId='primary',
-        timeMin=timeMin,
-        timeMax=timeMax,
-        singleEvents=True,
-        orderBy='startTime'
-    ).execute()
-    events = events_result.get('items', [])
-
-    return _format_event_list(events)
+    try:
+        events_result = service.events().list(
+            calendarId='primary',
+            timeMin=timeMin,
+            timeMax=timeMax,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        events = events_result.get('items', [])
+        return _format_event_list(events)
+    except Exception as e:
+        print(f"[Calendar] Upcoming fetch failed: {e}")
+        return []
 
 
 if __name__ == '__main__':

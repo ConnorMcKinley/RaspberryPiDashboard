@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>E-Ink Dashboard v18 (Padding Update)</title>
+    <title>E-Ink Dashboard v19</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/weather-icons/2.0.10/css/weather-icons.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;600;700&display=swap');
@@ -34,6 +34,24 @@
             /* Increased side padding to 5% to push content in */
             padding: 3% 5%;
             background-color: #FFFFFF;
+        }
+
+        /* --- BATTERY INDICATOR --- */
+        .battery-indicator {
+            position: absolute;
+            top: 3%;
+            right: 5%;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 1.4rem;
+            color: #444;
+            font-weight: 600;
+            z-index: 10;
+        }
+        .battery-icon-svg {
+            width: 32px;
+            height: 16px;
         }
 
         /* --- WEEK VIEW (TOP) --- */
@@ -227,6 +245,14 @@
 </head>
 <body>
     <div class="dashboard-container">
+        <!-- Battery Indicator -->
+        <div class="battery-indicator">
+            <span id="battery-icon-container">
+                <!-- SVG injected via JS -->
+            </span>
+            <span id="battery-level">--</span>
+        </div>
+
         <!-- Week View -->
         <div class="week-view-panel">
             <div class="week-view-header">Week Overview</div>
@@ -289,6 +315,29 @@
     };
 
     function getDayCellClass(dayOffsetFromToday) { return `center-${Math.abs(dayOffsetFromToday)}`; }
+
+    // Battery Icon Generator
+    function getBatteryIconSvg(level) {
+        if (level === null || level === undefined) return '';
+
+        let fillWidth = 0;
+        let color = '#444'; // Default dark grey
+
+        // Ensure level is 0-100
+        const pct = Math.max(0, Math.min(100, level));
+
+        // Map 0-100 to 0-24 (width of inner rect inside 32px SVG roughly)
+        // Main rect width is 26.
+        fillWidth = (pct / 100) * 26;
+
+        if (pct < 20) color = '#c62828'; // Red for low battery
+
+        return `<svg class="battery-icon-svg" viewBox="0 0 36 18">
+            <rect x="1" y="2" width="30" height="14" rx="3" fill="none" stroke="#666" stroke-width="2"/>
+            <rect x="32" y="6" width="3" height="6" rx="1" fill="#888"/>
+            <rect x="3" y="4" width="${fillWidth}" height="10" rx="1" fill="${color}"/>
+        </svg>`;
+    }
 
     // --- Week View Logic ---
     async function updateCombinedWeekView() {
@@ -367,6 +416,12 @@
                 if (d.error || d.net_worth === null) {
                     if (d.error) document.getElementById('header-total').textContent = "ERROR";
                     return;
+                }
+
+                // Battery Update
+                if (d.battery !== null && d.battery !== undefined) {
+                    document.getElementById('battery-level').textContent = d.battery + "%";
+                    document.getElementById('battery-icon-container').innerHTML = getBatteryIconSvg(d.battery);
                 }
 
                 // Header

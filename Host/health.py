@@ -14,9 +14,6 @@ from google.auth.transport.requests import Request
 # --- CONFIGURATION ---
 
 # The ID of the Google Drive folder containing your health exports.
-# To find this, open the folder in your browser and copy the last part of the URL.
-# Example URL: https://drive.google.com/drive/folders/1aBcDeFgHiJkLmNoPqRsTuVwXyZ_12345
-# Example ID: 1aBcDeFgHiJkLmNoPqRsTuVwXyZ_12345
 TARGET_FOLDER_ID = "1uBEwWRgd4KHCs_YKa-isVGaLzUa3bFr1"
 
 # The scopes required for the Google Drive API.
@@ -31,7 +28,6 @@ METRICS_TO_PROCESS = {
 }
 
 # --- FILE PATHS ---
-# These paths are relative to the script's location.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 HEALTH_HISTORY_FILE = os.path.join(_SCRIPT_DIR, 'health_data.json')
 TOKEN_PATH = os.path.join(_SCRIPT_DIR, 'drive_token.pickle')
@@ -47,21 +43,34 @@ def _get_drive_service():
     """Authenticates with Google and returns a Drive API service object."""
     creds = None
     if os.path.exists(TOKEN_PATH):
-        with open(TOKEN_PATH, 'rb') as token:
-            creds = pickle.load(token)
+        try:
+            with open(TOKEN_PATH, 'rb') as token:
+                creds = pickle.load(token)
+        except Exception as e:
+            print(f"[Health] Error loading pickle: {e}")
+            creds = None
 
     if not creds or not creds.valid or not all(s in creds.scopes for s in SCOPES):
         if creds and creds.expired and creds.refresh_token:
-            creds.scopes = list(set(SCOPES + creds.scopes))
-            creds.refresh(Request())
-        else:
+            try:
+                # Refresh scopes if needed
+                creds.scopes = list(set(SCOPES + creds.scopes))
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"[Health] Token refresh failed: {e}")
+                creds = None  # Force re-auth
+
+        if not creds or not creds.valid:
             credentials_file = DRIVE_CREDENTIALS_PATH if os.path.exists(
                 DRIVE_CREDENTIALS_PATH) else CALENDAR_CREDENTIALS_PATH
             if not os.path.exists(credentials_file):
-                raise FileNotFoundError(
-                    f"Google credentials not found. Please place 'drive_credentials.json' or 'google_credentials.json' in the script directory.")
+                print(f"[Health] ERROR: Credentials file not found.")
+                return None
+
             flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
-            creds = flow.run_local_server(port=8080)
+            # open_browser=False prevents spamming tabs on the server
+            print("[Health] Initiating login sequence. Please visit the URL below if prompted.")
+            creds = flow.run_local_server(port=8080, open_browser=False)
 
         with open(TOKEN_PATH, 'wb') as token:
             pickle.dump(creds, token)
@@ -72,32 +81,37 @@ def _get_drive_service():
 def _find_and_download_latest_file(service: Any) -> str:
     """Finds the most recent health export file and returns its content as a string."""
     if not TARGET_FOLDER_ID or "YOUR_FOLDER_ID" in TARGET_FOLDER_ID:
-        raise ValueError("TARGET_FOLDER_ID is not set. Please update it in health.py.")
+        raise ValueError("TARGET_FOLDER_ID is not set.")
 
     query = f"'{TARGET_FOLDER_ID}' in parents and name contains 'HealthAutoExport-'"
-    response = service.files().list(
-        q=query, corpora="user", includeItemsFromAllDrives=True,
-        supportsAllDrives=True, spaces='drive', fields='files(id, name)',
-        orderBy='name desc', pageSize=1
-    ).execute()
+    try:
+        response = service.files().list(
+            q=query, corpora="user", includeItemsFromAllDrives=True,
+            supportsAllDrives=True, spaces='drive', fields='files(id, name)',
+            orderBy='name desc', pageSize=1
+        ).execute()
 
-    files = response.get('files', [])
-    if not files:
-        raise FileNotFoundError(f"No 'HealthAutoExport-*' files found in the specified Google Drive folder.")
+        files = response.get('files', [])
+        if not files:
+            raise FileNotFoundError(f"No 'HealthAutoExport-*' files found in the specified Google Drive folder.")
 
-    file_id = files[0]['id']
-    request = service.files().get_media(fileId=file_id)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
+        file_id = files[0]['id']
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
 
-    done = False
-    while not done:
-        _, done = downloader.next_chunk()
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
 
-    return fh.getvalue().decode('utf-8')
+        return fh.getvalue().decode('utf-8')
+    except Exception as e:
+        print(f"[Health] Download failed: {e}")
+        return None
 
 
 def _parse_health_data(json_content: str) -> Dict[str, Dict[str, float]]:
+    if not json_content: return {}
     try:
         data = json.loads(json_content)
         metrics_list = data.get('data', {}).get('metrics', [])
@@ -167,16 +181,9 @@ def _update_and_save_history(new_data: Dict[str, Dict[str, float]]) -> List[Dict
     return updated_history
 
 
-
 def _calculate_weekly_summary(history: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """
     Calculates 7-day averages and the change from the previous 7 days.
-
-    Args:
-        history: A sorted list of daily health data for the last 14 days.
-
-    Returns:
-        A dictionary containing the summary for each metric.
     """
     today = datetime.date.today()
     summary = {}
@@ -221,14 +228,19 @@ def _calculate_weekly_summary(history: List[Dict[str, Any]]) -> Dict[str, Dict[s
 def get_weekly_health_summary() -> Dict[str, Dict[str, Any]]:
     """
     The main public function to orchestrate the entire health data update process.
-
-    It fetches the latest data from Google Drive, updates the local history,
-    and returns a calculated weekly summary.
-
-    Returns:
-        A dictionary containing the weekly summary for all tracked metrics.
     """
     service = _get_drive_service()
+    if not service:
+        # If service setup failed, return existing history
+        history = []
+        if os.path.exists(HEALTH_HISTORY_FILE):
+            try:
+                with open(HEALTH_HISTORY_FILE, 'r') as f:
+                    history = json.load(f)
+            except:
+                pass
+        return _calculate_weekly_summary(history)
+
     json_content = _find_and_download_latest_file(service)
     newly_parsed_data = _parse_health_data(json_content)
 
@@ -236,8 +248,11 @@ def get_weekly_health_summary() -> Dict[str, Dict[str, Any]]:
         # If parsing fails or yields no data, load old history and calculate from that.
         history = []
         if os.path.exists(HEALTH_HISTORY_FILE):
-            with open(HEALTH_HISTORY_FILE, 'r') as f:
-                history = json.load(f)
+            try:
+                with open(HEALTH_HISTORY_FILE, 'r') as f:
+                    history = json.load(f)
+            except:
+                pass
         return _calculate_weekly_summary(history)
 
     updated_history = _update_and_save_history(newly_parsed_data)

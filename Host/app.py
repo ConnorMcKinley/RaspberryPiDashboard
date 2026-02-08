@@ -18,6 +18,9 @@ STATE = "state.json"
 
 
 def load_cfg():
+    if not os.path.exists(CONFIG):
+        print(f"[config] Warning: {CONFIG} not found.")
+        return {}
     with open(CONFIG) as f:
         return json.load(f)
 
@@ -29,7 +32,10 @@ def save_state():
 
 def manual_login_flow():
     print("Launching browser for manual login. Please log in and complete any 2FA if required.")
-    cfg = config["fidelity"]
+    cfg = config.get("fidelity", {})
+    if not cfg:
+        print("Error: Fidelity config missing.")
+        return
     bot = FidelityAutomation(headless=False, debug=False, save_state=True)
     bot.page.goto("https://digital.fidelity.com/prgw/digital/login/full-page", timeout=600000)
     input("After logging in and seeing your account summary, press Enter here to save session and exit...")
@@ -39,29 +45,53 @@ def manual_login_flow():
     sys.exit(0)
 
 
+def clean_pickles():
+    """Deletes authentication pickle files to force re-login."""
+    files_to_clean = ["calendar_token.pickle", "drive_token.pickle"]
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    print("[clean] cleaning authentication tokens...")
+    for filename in files_to_clean:
+        filepath = os.path.join(script_dir, filename)
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+                print(f"[clean] Deleted: {filename}")
+            except Exception as e:
+                print(f"[clean] Error deleting {filename}: {e}")
+        else:
+            print(f"[clean] Not found (skipped): {filename}")
+    print("[clean] Done. Please restart the app to re-authenticate.")
+    sys.exit(0)
+
+
 def fetch_net_worth():
     print("[fetch] Updating account balances and details…")
     try:
-        cfg = config["fidelity"]
+        cfg = config.get("fidelity", {})
         rh_cfg = config.get("robinhood", {})
 
-        # 1. Fidelity
-        bot = FidelityAutomation(headless=True, debug=False, save_state=True)
-        need_pw, need_2fa = bot.login(cfg["username"], cfg["password"], save_device=True,
-                                      totp_secret=cfg.get("totp_secret"))
-        if not need_pw and not need_2fa:
-            print("Password error")
-            raise Exception("Fidelity password error")
-        if not need_2fa:
-            code = input("Enter 2-factor code: ")
-            bot.login_2FA(code)
+        if not cfg:
+            print("[fetch] Skipping Fidelity (no config)")
+            fidelity_data = {}
+        else:
+            # 1. Fidelity
+            bot = FidelityAutomation(headless=True, debug=False, save_state=True)
+            need_pw, need_2fa = bot.login(cfg["username"], cfg["password"], save_device=True,
+                                          totp_secret=cfg.get("totp_secret"))
+            if not need_pw and not need_2fa:
+                print("Password error")
+                raise Exception("Fidelity password error")
+            if not need_2fa:
+                code = input("Enter 2-factor code: ")
+                bot.login_2FA(code)
 
-        # Get detailed portfolio structure
-        fidelity_data = bot.get_detailed_portfolio()
-        bot.close_browser()
+            # Get detailed portfolio structure
+            fidelity_data = bot.get_detailed_portfolio()
+            bot.close_browser()
 
-        if not fidelity_data or fidelity_data.get('total_net_worth') == 0:
-            print("Warning: Fidelity data seems empty")
+            if not fidelity_data or fidelity_data.get('total_net_worth') == 0:
+                print("Warning: Fidelity data seems empty")
 
         # 2. Robinhood
         rh_data = None
@@ -164,7 +194,8 @@ default_state = dict(
     weather_forecast=[],
     weather_stamp=None,
     health_stats=None,
-    portfolio_details=None
+    portfolio_details=None,
+    battery=None  # Added battery to state
 )
 state = default_state.copy()
 
@@ -181,10 +212,14 @@ if os.path.exists(STATE):
 def parse_args():
     parser = argparse.ArgumentParser(description="Pi Dashboard App")
     parser.add_argument('--manual-login', action='store_true', help="Run browser for manual login and save session")
+    parser.add_argument('--clean', action='store_true', help="Delete authentication pickle files to fix token errors")
     return parser.parse_args()
 
 
 args = parse_args()
+
+if args.clean:
+    clean_pickles()
 
 if args.manual_login:
     manual_login_flow()
@@ -237,8 +272,27 @@ def api_data():
         change=delta_to_show,
         last_updated=state.get("last_updated"),
         error=state.get("error", False),
-        details=state.get("portfolio_details")  # Send detailed data
+        details=state.get("portfolio_details"),
+        battery=state.get("battery")  # Return battery in API
     )
+
+
+@app.route("/api/battery", methods=["POST"])
+def api_battery():
+    """Receives battery level from the client."""
+    data = request.json
+    if not data or "level" not in data:
+        return jsonify({"error": "Missing 'level' in payload"}), 400
+
+    try:
+        level = int(data["level"])
+        state["battery"] = level
+        # We don't save_state() here to avoid thrashing the disk too much,
+        # but you could if you want persistence across server restarts.
+        print(f"[battery] Updated battery level to {level}%")
+        return jsonify({"status": "ok", "level": level})
+    except ValueError:
+        return jsonify({"error": "Invalid battery level format"}), 400
 
 
 @app.route("/api/weather")
