@@ -77,14 +77,14 @@ def _get_drive_service():
                         return None
 
                     flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
-                    print("[Health] Initiating login sequence (Port 8080)...")
+                    print("[Health] Initiating login sequence (Port 8081)...")
 
                     try:
-                        creds = flow.run_local_server(port=8080, open_browser=False)
+                        creds = flow.run_local_server(port=8081, open_browser=False)
                         with open(TOKEN_PATH, 'wb') as token:
                             pickle.dump(creds, token)
                     except Exception as e:
-                        print(f"[Health] Auth Server Error (Port 8080 busy?): {e}")
+                        print(f"[Health] Auth Server Error (Port 8081 busy?): {e}")
                         return None
 
                 except Exception as e:

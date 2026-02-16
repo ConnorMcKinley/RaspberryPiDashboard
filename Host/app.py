@@ -7,7 +7,7 @@ from flask import Flask, jsonify, render_template, request
 
 # Import modules
 from fidelity import FidelityAutomation
-from robinhood import get_robinhood_positions
+# Robinhood import removed
 from weather import get_chicago_weekly
 from google_calendar import get_events_surrounding_days, get_upcoming_events, create_reminder_event
 from health import get_weekly_health_summary
@@ -45,38 +45,14 @@ def manual_login_flow():
     sys.exit(0)
 
 
-def setup_robinhood_flow():
-    print("\n--- ROBINHOOD INTERACTIVE SETUP ---")
-    print("This will log in once to generate a valid session file (pickle).")
-    print("Please have your phone ready for the SMS code.\n")
-
-    cfg = config.get("robinhood", {})
-    if not cfg or not cfg.get("username"):
-        print("Error: Robinhood config missing in config.json")
-        return
-
-    # Force a login attempt
-    try:
-        data = get_robinhood_positions(cfg["username"], cfg["password"], cfg["totp_secret"])
-        if data:
-            print("\nSUCCESS: Robinhood login successful. Session saved.")
-            print(f"Current Equity: ${data.get('equity', 0)}")
-        else:
-            print("\nFAILURE: Login returned no data.")
-    except Exception as e:
-        print(f"\nERROR: {e}")
-
-    sys.exit(0)
-
-
 def clean_pickles():
     """Deletes authentication pickle files to force re-login."""
     print("[Clean] Searching for pickle files to remove...")
 
     files_to_check = [
         "calendar_token.pickle",
-        "drive_token.pickle",
-        "robinhood.pickle"
+        "drive_token.pickle"
+        # Robinhood pickle removed from check list
     ]
     files_to_check.extend(glob.glob("*.pickle"))
 
@@ -103,77 +79,14 @@ def clean_pickles():
     if not removed:
         print("[Clean] No pickle files found.")
     else:
-        print("[Clean] Cleanup complete. Please run --setup-robinhood to re-auth.")
+        print("[Clean] Cleanup complete. Please restart the app.")
     sys.exit(0)
-
-
-# --- ROBINHOOD SAFETY NET ---
-def check_rh_limits():
-    """Returns True if we are allowed to attempt Robinhood auth."""
-    now = datetime.now()
-
-    # 1. Check for Hard Lockout (caused by 429s)
-    lockout_str = state.get("rh_lockout_until")
-    if lockout_str:
-        try:
-            lockout_dt = datetime.fromisoformat(lockout_str)
-            if now < lockout_dt:
-                remaining = int((lockout_dt - now).total_seconds() / 60)
-                print(f"[RH Safety] LOCKED OUT due to previous 429 errors. Resuming in {remaining} mins.")
-                return False
-            else:
-                # Lockout expired, clear it
-                print("[RH Safety] Lockout expired. Resuming attempts.")
-                state["rh_lockout_until"] = None
-        except ValueError:
-            state["rh_lockout_until"] = None
-
-    # 2. Check Frequency Limits
-    timestamps = state.get("rh_timestamps", [])
-    try:
-        dt_timestamps = [datetime.fromisoformat(t) for t in timestamps]
-    except ValueError:
-        dt_timestamps = []
-
-    last_hour = [t for t in dt_timestamps if (now - t).total_seconds() < 3600]
-    last_day = [t for t in dt_timestamps if (now - t).total_seconds() < 86400]
-
-    state["rh_timestamps"] = [t.isoformat() for t in last_day]
-    save_state()
-
-    if len(last_hour) >= 2:
-        print(f"[RH Safety] Hourly limit reached ({len(last_hour)}/2). Skipping.")
-        return False
-    if len(last_day) >= 10:  # Increased daily slightly, but hourly is strict
-        print(f"[RH Safety] Daily limit reached ({len(last_day)}/10). Skipping.")
-        return False
-
-    return True
-
-
-def record_rh_attempt():
-    """Records a new Robinhood authentication attempt."""
-    if "rh_timestamps" not in state:
-        state["rh_timestamps"] = []
-    state["rh_timestamps"].append(datetime.now().isoformat())
-    save_state()
-
-
-def activate_rh_lockout():
-    """Locks Robinhood attempts for 24 hours."""
-    lock_until = datetime.now() + timedelta(hours=24)
-    state["rh_lockout_until"] = lock_until.isoformat()
-    state["robinhood_error"] = True
-    save_state()
-    print(f"[RH Safety] ⛔ CRITICAL: 429 Rate Limit detected. Locking Robinhood for 24 hours (until {lock_until}).")
-    create_reminder_event("RH Rate Limited (24h)")
 
 
 def fetch_net_worth():
     print("[fetch] Updating account balances and details…")
     try:
         cfg = config.get("fidelity", {})
-        rh_cfg = config.get("robinhood", {})
 
         fidelity_data = {}
         if not cfg:
@@ -194,55 +107,14 @@ def fetch_net_worth():
                 print(f"[fetch] Fidelity Error: {e}")
                 pass
 
-        # 2. Robinhood (With Strict Safety Net)
-        rh_data = None
-        rh_positions = []
-
-        should_attempt_rh = False
-        if rh_cfg and rh_cfg.get("username"):
-            should_attempt_rh = True
-
-        if should_attempt_rh and check_rh_limits():
-            print("[fetch] Attempting Robinhood login...")
-            record_rh_attempt()
-            try:
-                rh_data = get_robinhood_positions(
-                    rh_cfg["username"], rh_cfg["password"], rh_cfg["totp_secret"]
-                )
-                if rh_data:
-                    rh_positions = rh_data.get("positions", [])
-                    print(f"[fetch] Robinhood: {rh_data.get('equity'):,.2f} added")
-                    state["robinhood_error"] = False
-                else:
-                    print("[fetch] Robinhood returned no data.")
-                    state["robinhood_error"] = True
-
-            except Exception as e:
-                err_str = str(e)
-                print(f"[fetch] Robinhood Failed: {err_str}")
-
-                # Check for 429 in the exception message or type
-                if "429" in err_str or "Too Many Requests" in err_str:
-                    activate_rh_lockout()
-                else:
-                    state["robinhood_error"] = True
-
-        elif should_attempt_rh:
-            print("[fetch] Robinhood skipped due to limits/lockout.")
-            # Keep error visible
-            if state.get("robinhood_error") is None:
-                state["robinhood_error"] = True
-
-        # Combine Totals
+        # Combine Totals (Robinhood integration removed)
         total_nw = fidelity_data.get('total_net_worth', 0.0)
-        if rh_data:
-            total_nw += rh_data.get('equity', 0.0)
 
         portfolio_details = {
             "total_value": total_nw,
             "fidelity": fidelity_data.get("fidelity_accounts", []),
-            "non_fidelity": fidelity_data.get("non_fidelity_accounts", []),
-            "robinhood": rh_positions
+            "non_fidelity": fidelity_data.get("non_fidelity_accounts", [])
+            # Robinhood key removed
         }
 
         today_iso = date.today().isoformat()
@@ -323,11 +195,8 @@ default_state = dict(
     weather_stamp=None,
     health_stats=None,
     portfolio_details=None,
-    battery=None,
-    rh_timestamps=[],
-    rh_lockout_until=None,
-    rh_last_reminder_date=None,
-    robinhood_error=False
+    battery=None
+    # Robinhood state keys removed
 )
 state = default_state.copy()
 
@@ -344,8 +213,6 @@ if os.path.exists(STATE):
 def parse_args():
     parser = argparse.ArgumentParser(description="Pi Dashboard App")
     parser.add_argument('--manual-login', action='store_true', help="Run browser for Fidelity manual login")
-    parser.add_argument('--setup-robinhood', action='store_true',
-                        help="Run interactive Robinhood login to fix 2FA/Pickle errors")
     parser.add_argument('--clean', action='store_true', help="Delete authentication pickle files to fix token errors")
     return parser.parse_args()
 
@@ -357,9 +224,6 @@ if args.clean:
 
 if args.manual_login:
     manual_login_flow()
-
-if args.setup_robinhood:
-    setup_robinhood_flow()
 
 
 def periodic_update():
@@ -409,7 +273,7 @@ def api_data():
         change=delta_to_show,
         last_updated=state.get("last_updated"),
         error=state.get("error", False),
-        robinhood_error=state.get("robinhood_error", False),
+        # Robinhood error removed
         details=state.get("portfolio_details"),
         battery=state.get("battery")
     )

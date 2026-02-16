@@ -20,7 +20,7 @@ CREDENTIALS_PATH = os.path.join(script_dir, 'google_credentials.json')
 
 # GLOBAL LOCK & COOLDOWN
 # Prevents multiple threads (e.g. api/calendar + api/upcoming) from trying
-# to open port 8080 simultaneously, which causes Errno 98.
+# to open port 8081 simultaneously, which causes Errno 98.
 _auth_lock = threading.Lock()
 _last_auth_attempt_time = 0
 AUTH_COOLDOWN_SECONDS = 300  # Don't try to auth more than once every 5 minutes
@@ -70,14 +70,14 @@ def _get_calendar_service():
                         return None
 
                     flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
-                    print("[Calendar] Initiating login sequence (Port 8080)...")
+                    print("[Calendar] Initiating login sequence (Port 8081)...")
 
                     try:
-                        creds = flow.run_local_server(port=8080, open_browser=False)
+                        creds = flow.run_local_server(port=8081, open_browser=False)
                         with open(TOKEN_PATH, 'wb') as token:
                             pickle.dump(creds, token)
                     except Exception as e:
-                        print(f"[Calendar] Auth Server Error (Port 8080 busy?): {e}")
+                        print(f"[Calendar] Auth Server Error (Port 8081 busy?): {e}")
                         return None
 
                 except Exception as e:
